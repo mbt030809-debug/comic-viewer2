@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(apksigner verify *)",
+      "Bash(aapt2 dump *)",
+      "Bash(unzip -l *)",
+      "Bash(node --check *)"
+    ]
+  }
+}

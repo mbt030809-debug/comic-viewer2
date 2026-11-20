@@ -1,0 +1,1695 @@
+package com.example.comicviewer
+
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.app.Dialog
+import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.Typeface
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.*
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.webkit.*
+import android.widget.*
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.abs
+
+/** 웹툰 전용 브라우저 */
+class MainActivity : Activity() {
+    private lateinit var prefs: SharedPreferences
+    private lateinit var web: WebView
+    private lateinit var urlInput: EditText
+    private lateinit var topBar: View
+    private lateinit var autoBtn: Button
+    private lateinit var twoBtn: View
+    private lateinit var nextBtn: View
+    private lateinit var track: View
+    private lateinit var thumb: View
+    private lateinit var wm: WmGlue // 워터마크 자동 제거(이미지 요청을 가로채 가공)
+    private var wmJsInfo = ""       // 페이지 안 '겹쳐 올린 로고 요소' 숨김 현황(진단용)
+    private val handler = Handler(Looper.getMainLooper())
+    private val density get() = resources.displayMetrics.density
+    private var rootW = 0 // 실제 레이아웃 너비(px). 접힘/펼침 전환 시 설정값이 늦게 갱신되는 문제를 피하려고 이것을 기준으로 판단
+    private val expanded get() = (if (rootW > 0) rootW / density else resources.configuration.screenWidthDp.toFloat()) >= 600f // 폴드 펼침(태블릿 폭)
+
+    // ---- 설정 ----
+    private var two get() = prefs.getBoolean("two", false); set(v) = prefs.edit().putBoolean("two", v).apply()
+    private var rtl get() = prefs.getBoolean("rtl", false); set(v) = prefs.edit().putBoolean("rtl", v).apply()
+    private var gap get() = prefs.getInt("gap", 8); set(v) = prefs.edit().putInt("gap", v).apply()
+    private var keepOn get() = prefs.getBoolean("keepOn", true); set(v) = prefs.edit().putBoolean("keepOn", v).apply()
+    private var autoPageMode get() = prefs.getBoolean("autoPage", false); set(v) = prefs.edit().putBoolean("autoPage", v).apply() // 자동 방식2
+    private var autoWait get() = prefs.getInt("autoWait", 30); set(v) = prefs.edit().putInt("autoWait", v).apply() // 방식2 대기(0.1초 단위)
+    private var autoWaitScale get() = prefs.getBoolean("autoWaitScale", false); set(v) = prefs.edit().putBoolean("autoWaitScale", v).apply() // 경계 때문에 덜 이동했으면 대기도 그 비율만큼 단축
+    private var autoWaitMin get() = prefs.getInt("autoWaitMin", 5); set(v) = prefs.edit().putInt("autoWaitMin", v).apply() // 경계로 덜 이동했을 때의 최소 대기(0.1초 단위)
+    private var calmMode get() = prefs.getBoolean("calm", false); set(v) = prefs.edit().putBoolean("calm", v).apply() // 멀미 방지: 일정 속도 이동·메뉴 즉시 전환·자동 스크롤 천천히 시작·중앙 기준점
+    private var nextWait get() = prefs.getInt("nextWait", 20); set(v) = prefs.edit().putInt("nextWait", v).apply() // 다음화로 넘어온 뒤 자동 스크롤을 다시 시작하기까지 대기(0.1초 단위)
+    private var autoNext get() = prefs.getBoolean("autoNext", true); set(v) = prefs.edit().putBoolean("autoNext", v).apply()
+    private var foldAutoTwo get() = prefs.getBoolean("foldTwo", false); set(v) = prefs.edit().putBoolean("foldTwo", v).apply()
+    private var wmGain get() = prefs.getInt("wmGain", 100); set(v) = prefs.edit().putInt("wmGain", v).apply() // 그림 위 워터마크 보정 세기(%)
+    private var wmL get() = prefs.getInt("wmL", 140); set(v) = prefs.edit().putInt("wmL", v).apply() // 로고 색 밝기
+    private var wmMark get() = prefs.getBoolean("wmMark", true); set(v) = prefs.edit().putBoolean("wmMark", v).apply() // 인식 표시(빨간 점)
+    private var wmOn get() = prefs.getBoolean("wm", true); set(v) = prefs.edit().putBoolean("wm", v).apply() // 워터마크 지우기
+    private var smoothMs get() = prefs.getInt("ms", 500); set(v) = prefs.edit().putInt("ms", v).apply()
+    private var pageRatio get() = prefs.getInt("ratio", 95); set(v) = prefs.edit().putInt("ratio", v).apply()
+    private var pageRatio2 get() = prefs.getInt("ratio2", 100); set(v) = prefs.edit().putInt("ratio2", v).apply() // 두쪽 보기 1회 이동 거리(%)
+    private var insetL = 0; private var insetR = 0 // 가로 모드의 노치/내비게이션 바 좌우 여백(px)
+    private var navInset = 0 // 마지막으로 확인한 하단 내비게이션 바 높이(px)
+    private var barInset = 0 // 마지막으로 확인한 상태바 높이(px). 메뉴를 다시 열 때 미리 반영
+    private var quietUntil = 0L // 두쪽 보기 준비(스윕) 중에는 스크롤 이벤트로 저장/전체화면/다음화 판단 안 함
+    private var btnSize get() = prefs.getInt("btnSize", 52); set(v) = prefs.edit().putInt("btnSize", v).apply() // 플로팅 버튼 크기(dp)
+    private var holdSpeed get() = prefs.getInt("holdSpeed", 800); set(v) = prefs.edit().putInt("holdSpeed", v).apply() // ▼ 꾹 누름 연속 스크롤 속도(px/초)
+    private var snapImg get() = prefs.getBoolean("snapImg", false); set(v) = prefs.edit().putBoolean("snapImg", v).apply() // 이미지 사이 단색 경계 직전에서 멈춤
+    private var colorTol get() = prefs.getInt("colorTol", 8); set(v) = prefs.edit().putInt("colorTol", v).apply() // 같은 색으로 볼 색상 차이 허용(%)
+    private var ignorePct get() = prefs.getInt("ignorePct", 30); set(v) = prefs.edit().putInt("ignorePct", v).apply() // 이동 거리 중 이 % 이내에서 시작되는 단색 띠는 무시
+    private var stopBottomPct get() = prefs.getInt("stopBottomPct", 5); set(v) = prefs.edit().putInt("stopBottomPct", v).apply() // 경계에서 멈출 때 화면 아래에 남길 여백(화면 높이 %)
+    private var skipTopPct get() = prefs.getInt("skipTopPct", 10); set(v) = prefs.edit().putInt("skipTopPct", v).apply() // 건너뛴 뒤 화면 위쪽을 비워둘 비율(%): 카메라(컷아웃)에 가려지는 윗부분 확보
+    private var skipBand get() = prefs.getBoolean("skipBand", true); set(v) = prefs.edit().putBoolean("skipBand", v).apply() // 경계에 멈춘 뒤 다음 이동은 경계를 건너뜀
+    private var blackL get() = prefs.getInt("blackL", 0); set(v) = prefs.edit().putInt("blackL", v).apply() // 단색 판정 영역: 왼쪽 위치(이미지 너비 %)
+    private var blackW get() = prefs.getInt("blackW", 100); set(v) = prefs.edit().putInt("blackW", v).apply() // 단색 판정 영역: 가로 폭(%)
+    private var blackH get() = prefs.getInt("blackH", 60); set(v) = prefs.edit().putInt("blackH", v).apply() // 단색 띠로 볼 최소 높이(dp)
+    private var btnAlpha get() = prefs.getInt("alpha", 70); set(v) = prefs.edit().putInt("alpha", v).apply()
+    private var autoSpeed get() = prefs.getInt("speed", 120); set(v) = prefs.edit().putInt("speed", v).apply()
+    private var imgScale: Int // 이미지 너비(%): 접힘/펼침 상태별로 따로 저장
+        get() = prefs.getInt(if (expanded) "scale_e" else "scale_c", 100)
+        set(v) = prefs.edit().putInt(if (expanded) "scale_e" else "scale_c", v).apply()
+
+    private var pageAnim: ValueAnimator? = null
+    private var auto = false
+    private var resumeAuto = false
+    private val clearResume = Runnable { resumeAuto = false }
+    /** 다음화 이동 후 자동 스크롤을 이어갈 예약. 페이지 로드가 없으면 10초 뒤 자동 해제 */
+    private fun armResume() { resumeAuto = true; handler2.removeCallbacks(clearResume); handler2.postDelayed(clearResume, 20000) }
+
+    @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
+    override fun onCreate(b: Bundle?) {
+        super.onCreate(b)
+        // 카메라 컷아웃(펀치홀/노치) 영역까지 화면을 사용 — 전체화면 시 상단 검은 띠 제거
+        if (Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES }
+        }
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0xFF000000.toInt())) // 시스템 바 뒤/가장자리가 회색으로 보이지 않게
+        setContentView(R.layout.activity_main)
+        setupEdgeToEdge()
+        prefs = getSharedPreferences("cv", MODE_PRIVATE)
+        wm = WmGlue.create(filesDir); wm.engine.logSink = { android.util.Log.d("WmDiag", it) }; wm.engine.enabled = wmOn; wm.engine.marker = wmMark; wm.engine.gain = wmGain; wm.engine.logoL = wmL
+        Thread { try { wm.engine.nn = OrtNet(assets.open("wm_net.onnx").use { it.readBytes() }) } catch (_: Throwable) { } }.also { it.isDaemon = true }.start() // 신경망 준비(실패하면 계산식만 사용)
+        wm.engine.onModel = { runOnUiThread { try { val l = wm.takePlain(); if ((wmOn || wmMark) && l.isNotEmpty()) web.evaluateJavascript("window.__wmRetro&&window.__wmRetro(" + org.json.JSONArray(l).toString() + ")", null) } catch (_: Throwable) { } } } // 모양을 찾은 순간, 그 전에 원본으로 나간 이미지를 다시 받아 지움
+        web = findViewById(R.id.web); urlInput = findViewById(R.id.urlInput)
+        urlInput.setOnFocusChangeListener { _, has ->
+            if (has) { val t = urlInput.text.toString(); urlInput.setText(t); urlInput.selectAll() } // 편집 시작: 강조 없는 일반 글자로 바꾸고 전체 선택
+            else { shownUrl = null; showUrl(web.url) }                                                   // 편집 끝: 현재 주소를 다시 표시
+        }
+        topBar = findViewById(R.id.topBar); autoBtn = findViewById(R.id.autoBtn); twoBtn = findViewById(R.id.twoBtn)
+        nextBtn = findViewById(R.id.nextBtn)
+        applyKeepOn()
+        initScrollBar()
+        findViewById<View>(R.id.topBar).addOnLayoutChangeListener { v, _, t, _, bottom, _, _, _, _ ->
+            // 메뉴가 표시 중이면 웹페이지 상단 여백을 메뉴 높이에 맞춤(초기 표시/높이 변화 대응)
+            if (!full && menuAnim?.isRunning != true && v.visibility == View.VISIBLE) {
+                val p2 = web.layoutParams as FrameLayout.LayoutParams
+                if (p2.topMargin != bottom - t) { p2.topMargin = bottom - t; web.layoutParams = p2 }
+            }
+        }
+        web.isVerticalScrollBarEnabled = false; web.isHorizontalScrollBarEnabled = false
+        web.settings.apply {
+            javaScriptEnabled = true; domStorageEnabled = true
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        }
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
+        BandAnalyzer.userAgent = web.settings.userAgentString // 분석용 이미지 요청도 페이지와 같은 UA 사용
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(v: WebView, p: Int) { showLoad(p) }
+        }
+        web.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? = try { wm.intercept(r) } catch (_: Throwable) { null } // 실패하면 웹뷰가 원래대로 받음
+            override fun onPageStarted(v: WebView, u: String, f: Bitmap?) {
+                wm.pageUrl = u; wm.engine.onPage(); wm.newPage()
+                handler.removeCallbacksAndMessages(null)
+                snapInfo = null
+                analyzer.cancelPending() // 이전 페이지 이미지 분석이 새 페이지 로딩과 대역폭/연결을 다투지 않게 중단
+                curKey = null; saving = false; titleStable = 0; atBottomShown = false; nextBtn.visibility = View.GONE
+                syncUrl(u)
+            }
+            override fun doUpdateVisitedHistory(v: WebView, u: String, isReload: Boolean) { syncUrl(u) } // 리다이렉트·SPA 이동 포함, 실제 현재 주소 반영
+            override fun onPageFinished(v: WebView, u: String) {
+                syncUrl(u)
+                injectScript()
+                if (wmOn) v.evaluateJavascript(WM_JS, null) else if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
+                handler.postDelayed({ checkTitle() }, 300)
+                if (resumeAuto) { resumeAuto = false; handler.postDelayed({ applyAuto(true) }, nextWait * 100L) }
+                else if (auto && autoPageMode) { handler.removeCallbacks(pageAutoRun); handler.postDelayed(pageAutoRun, 1500) } // 페이지 이동으로 지워진 방식2 예약 복구
+            }
+            override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
+                if (r.isForMainFrame) Toast.makeText(this@MainActivity, "로드 실패 · ${e.description}", Toast.LENGTH_SHORT).show()
+            }
+            override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
+                val s = r.url.scheme
+                return s != "http" && s != "https"
+            }
+        }
+        web.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { touching = true; resumeAuto = false; pageAnim?.cancel(); if (auto) applyAuto(false) }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { touching = false; touchEndAt = System.currentTimeMillis() }
+            }
+            false
+        }
+        web.setOnScrollChangeListener { _, _, y, _, oy -> onScrolled(y, y - oy) }
+
+        findViewById<View>(R.id.goBtn).setOnClickListener { go(urlInput.text.toString()) }
+        urlInput.setOnEditorActionListener { _, a, _ -> if (a == EditorInfo.IME_ACTION_GO) { go(urlInput.text.toString()); true } else false }
+        findViewById<View>(R.id.backBtn).setOnClickListener { if (web.canGoBack()) web.goBack() }
+        findViewById<View>(R.id.bookmarkBtn).setOnClickListener { showBookmarks() }
+        findViewById<View>(R.id.historyBtn).setOnClickListener { showHistory() }
+        findViewById<View>(R.id.settingsBtn).setOnClickListener { showSettings() }
+        twoBtn.setOnClickListener { applyTwo(!two) }
+        autoBtn.setOnClickListener { applyAuto(!auto) }
+        nextBtn.setOnClickListener { goNext() }
+        findViewById<View>(R.id.editBtn).setOnClickListener {
+            editMode = !editMode; applyEditVisual()
+        }
+        findViewById<View>(R.id.downBtn).setOnClickListener { pageScroll(1) }
+        findViewById<View>(R.id.topBtn).setOnClickListener { pageAnim?.cancel(); applyAuto(false); web.scrollTo(0, 0) }
+        updateTwoBtn(); applyBtnAlpha(); applyScale(); applyBtnSize(); initDraggableButtons(); applyEditVisual(); applyCalm()
+        if (foldAutoTwo) { two = expanded; updateTwoBtn() }
+        findViewById<View>(R.id.root).addOnLayoutChangeListener { _, l, _, r, _, ol, _, orr, _ ->
+            val w = r - l
+            if (w > 0 && w != orr - ol) { val first = rootW == 0; rootW = w; if (!first) onWidthChanged() else { applyScale(); if (foldAutoTwo && two != expanded) { two = expanded; updateTwoBtn() } } }
+        }
+
+        checkUpdate()
+        val shared = intent?.dataString ?: intent?.getStringExtra(android.content.Intent.EXTRA_TEXT)
+        go(shared ?: prefs.getString("last", null) ?: "https://www.google.com")
+    }
+
+    /** 접힘↔펼침 등으로 창 너비가 바뀐 뒤(레이아웃 완료 후) 호출 */
+    private fun onWidthChanged() {
+        closeRegionEditor() // 회전/접힘으로 좌표가 달라졌으므로 편집기 닫음
+        applyScale()
+        if (foldAutoTwo) {
+            val want = expanded
+            if (want != two) { two = want; updateTwoBtn(); if (!want) { web.reload(); return } }
+        }
+        injectScript()
+    }
+
+    override fun onDestroy() { updateReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }; analyzer.shutdown(); applyAuto(false); stopHold(); handler.removeCallbacksAndMessages(null); handler2.removeCallbacksAndMessages(null); web.destroy(); super.onDestroy() }
+    override fun onPause() { wm.engine.persist(); calmSeconds = 0; syncUrl(web.url); touching = false; applyAuto(false); stopHold(); savePosNow(sync = true); web.onPause(); CookieManager.getInstance().flush(); super.onPause() }
+    override fun onResume() { super.onResume(); web.onResume() }
+    @Deprecated("") override fun onBackPressed() { if (closeRegionEditor()) return; if (web.canGoBack()) web.goBack() else super.onBackPressed() }
+    override fun onKeyDown(k: Int, e: KeyEvent): Boolean = when (k) {
+        KeyEvent.KEYCODE_VOLUME_DOWN -> { if (e.repeatCount == 0 && regionScrim == null) pageScroll(1); true } // 길게 눌러 반복되는 키 입력은 무시(애니메이션 재시작 방지)
+        KeyEvent.KEYCODE_VOLUME_UP -> { if (e.repeatCount == 0 && regionScrim == null) pageScroll(-1); true }
+        else -> super.onKeyDown(k, e)
+    }
+
+    /** 현재 웹페이지 주소를 주소창과 '마지막 페이지'로 저장(주소 입력 중이면 주소창은 건드리지 않음) */
+    private fun syncUrl(u: String?) {
+        if (u.isNullOrEmpty() || u == "about:blank") return
+        wm.pageUrl = u
+        prefs.edit().putString("last", u).apply()
+        showUrl(u)
+    }
+
+    private var shownUrl: String? = null
+    /** 주소창에 주소 표시(편집 중이면 그대로 둠). 호스트는 밝게, 나머지는 흐리게 */
+    private fun showUrl(u: String?) {
+        if (u.isNullOrEmpty() || u == "about:blank" || urlInput.hasFocus()) return
+        if (shownUrl == u && urlInput.text.toString() == u) return
+        shownUrl = u
+        val sp = android.text.SpannableString(u)
+        val a = u.indexOf("://").let { if (it >= 0) it + 3 else 0 }
+        var b = u.indexOf('/', a); if (b < 0) b = u.length
+        val dim = getColor(R.color.txt3)
+        if (a > 0) sp.setSpan(android.text.style.ForegroundColorSpan(dim), 0, a, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (b < u.length) sp.setSpan(android.text.style.ForegroundColorSpan(dim), b, u.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        urlInput.setText(sp)
+        findViewById<View>(R.id.urlLock).visibility = if (u.startsWith("https://")) View.VISIBLE else View.GONE
+    }
+
+    private fun go(raw: String) {
+        resumeAuto = false
+        urlInput.clearFocus()
+        var u = raw.trim(); if (u.isEmpty()) return
+        if (!u.contains("://")) u = if (u.contains(".") && !u.contains(" ")) "https://$u" else "https://www.google.com/search?q=" + java.net.URLEncoder.encode(u, "utf-8")
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(urlInput.windowToken, 0)
+        showUrl(u) // 이동할 주소를 바로 보여 줌(로드 시작 전에도 반응이 느껴지게)
+        web.stopLoading()
+        web.loadUrl(u)
+    }
+
+    private fun applyCalm() { if (!calmMode) setMask(false) }
+
+    /** 메뉴 아래의 로딩 진행선(메뉴가 숨겨져 있으면 보이지 않음) */
+    private fun showLoad(p: Int) {
+        val f = findViewById<View>(R.id.loadFill)
+        f.pivotX = 0f; f.animate().cancel()
+        if (p < 100) { f.alpha = 1f; f.animate().scaleX(p / 100f).setDuration(120).start() }
+        else f.animate().scaleX(1f).setDuration(120).withEndAction { f.animate().alpha(0f).setDuration(220).withEndAction { f.scaleX = 0f }.start() }.start()
+    }
+
+    // ---- 업데이트: 실행할 때 GitHub 최신 빌드 번호를 확인하고, 새 버전이면 내려받아 설치 화면을 띄움 ----
+    private val relBase = "https://github.com/mbt030809-debug/comic-viewer/releases/download/latest/"
+    private var updateReceiver: android.content.BroadcastReceiver? = null
+    private fun checkUpdate() {
+        Thread {
+            try {
+                val c = java.net.URL(relBase + "version.txt").openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 8000; c.readTimeout = 8000
+                val remote = c.inputStream.bufferedReader().use { it.readText() }.trim().toIntOrNull() ?: return@Thread
+                @Suppress("DEPRECATION") val cur = packageManager.getPackageInfo(packageName, 0).versionCode
+                if (remote > cur) runOnUiThread { if (!isFinishing) showUpdateSheet() }
+            } catch (_: Exception) { /* 오프라인 등: 조용히 넘어감 */ }
+        }.start()
+    }
+    private fun showUpdateSheet() {
+        val ui = createSheet("새 버전", null, if (rootW > 0) rootW else resources.displayMetrics.widthPixels, ViewGroup.LayoutParams.WRAP_CONTENT)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(16), dp(4), dp(16), dp(20)) }
+        row.addView(pillButton("나중에", R.drawable.bg_btn_tonal, col(R.color.txt)).apply { setOnClickListener { ui.dialog.dismiss() } },
+            LinearLayout.LayoutParams(0, dp(50), 1f).apply { marginEnd = dp(8) })
+        row.addView(pillButton("업데이트", R.drawable.bg_btn_accent, col(R.color.on_accent)).apply { setOnClickListener { ui.dialog.dismiss(); startUpdate() } },
+            LinearLayout.LayoutParams(0, dp(50), 1.4f))
+        ui.root.addView(row)
+        ui.dialog.show()
+    }
+    private fun startUpdate() {
+        try {
+            java.io.File(getExternalFilesDir(null), "update.apk").delete()
+            val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
+            val mime = "application/vnd.android.package-archive"
+            val id = dm.enqueue(android.app.DownloadManager.Request(android.net.Uri.parse(relBase + "comic-viewer.apk"))
+                .setTitle("만화 뷰어 업데이트").setMimeType(mime)
+                .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(this, null, "update.apk"))
+            Toast.makeText(this, "내려받는 중", Toast.LENGTH_SHORT).show()
+            val r = object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, i: android.content.Intent) {
+                    if (i.getLongExtra(android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
+                    try { unregisterReceiver(this) } catch (_: Exception) {}
+                    updateReceiver = null
+                    val uri = dm.getUriForDownloadedFile(id)
+                    if (uri == null) { Toast.makeText(this@MainActivity, "내려받기 실패", Toast.LENGTH_SHORT).show(); return }
+                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW).setDataAndType(uri, mime)
+                        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            }
+            updateReceiver = r
+            val f = android.content.IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, RECEIVER_EXPORTED) else registerReceiver(r, f)
+        } catch (_: Exception) { Toast.makeText(this, "업데이트 실패", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun applyKeepOn() {
+        if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+    // ---- 플로팅 버튼: 꾹 눌러 이동, 위치 저장 ----
+    private fun floatBtns(): List<View> = listOf(R.id.autoBtn, R.id.downBtn).map { findViewById<View>(it) }
+
+    private fun applyBtnSize() {
+        val px = (btnSize * density).toInt()
+        floatBtns().forEach { v ->
+            val lp = v.layoutParams; if (lp.width != px || lp.height != px) { lp.width = px; lp.height = px; v.layoutParams = lp }
+            if (v is ImageView) { val pd = (px * 0.17f).toInt(); v.setPadding(pd, pd, pd, pd) } // 아이콘이 버튼 크기에 맞춰 함께 커지고 작아지게
+        }
+        findViewById<View>(R.id.btnLayer).post { placeBtns() }
+    }
+
+    private fun placeBtns() {
+        val layer = findViewById<View>(R.id.btnLayer)
+        val w = layer.width.toFloat(); val h = layer.height.toFloat()
+        if (w <= 0f) return
+        val size = btnSize * density
+        val startY = (h - floatBtns().size * (size + 2 * density)) / 2f
+        floatBtns().forEachIndexed { i, v ->
+            val k = resources.getResourceEntryName(v.id)
+            val fx = prefs.getFloat("bx_$k", -1f); val fy = prefs.getFloat("by_$k", -1f)
+            val x = if (fx >= 0f) fx * w else w - size - 40 * density
+            val y = if (fy >= 0f) fy * h else startY + i * (size + 2 * density)
+            v.x = x.coerceIn(0f, (w - size).coerceAtLeast(0f)); v.y = y.coerceIn(0f, (h - size).coerceAtLeast(0f))
+        }
+    }
+
+    // ---- 버튼 편집 모드: 상단 메뉴 '편집'을 켜면 우측 버튼을 바로 드래그해 이동 ----
+    private var editMode = false
+    private fun applyEditVisual() { floatBtns().forEach { it.setBackgroundResource(if (editMode) R.drawable.bg_edit else 0) }; findViewById<View>(R.id.editBtn).isSelected = editMode }
+
+    // ---- ▼ 꾹 누르면 누르는 동안 연속 스크롤(속도 설정) ----
+    private var holding = false
+    private val holdFrame = object : Choreographer.FrameCallback {
+        var last = 0L; var acc = 0f; var t0 = 0L
+        override fun doFrame(t: Long) {
+            if (!holding) return
+            if (t0 == 0L) t0 = t
+            if (last != 0L) {
+                acc += holdSpeed * (if (calmMode) minOf(1f, (t - t0) / 1.0e9f) else 1f) * (t - last) / 1e9f
+                val d = acc.toInt()
+                if (d != 0) { web.scrollBy(0, d); acc -= d }
+                if (atBottom()) { stopHold(); return }
+            }
+            last = t
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+    private fun startHold() { holding = true; applyAuto(false); pageAnim?.cancel(); setFull(true); holdFrame.last = 0L; holdFrame.acc = 0f; holdFrame.t0 = 0L; applyCalm(); Choreographer.getInstance().postFrameCallback(holdFrame) }
+    private fun stopHold() { holding = false; Choreographer.getInstance().removeFrameCallback(holdFrame); applyCalm() }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun initDraggableButtons() {
+        val layer = findViewById<View>(R.id.btnLayer)
+        layer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, orr, ob ->
+            if (r - l != orr - ol) placeBtns() // 폭이 바뀔 때(접힘/펼침·회전)만 저장된 비율로 재배치
+            else if (b - t != ob - ot) floatBtns().forEach { v -> v.y = v.y.coerceIn(0f, ((b - t) - v.height).toFloat().coerceAtLeast(0f)) } // 시스템바 토글 등은 위치 유지
+        }
+        val slop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        floatBtns().forEach { v ->
+            var offX = 0f; var offY = 0f; var downX = 0f; var downY = 0f
+            var held = false; var cancelled = false
+            val holdStart = Runnable { held = true; v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); startHold() }
+            v.setOnTouchListener { view, e ->
+                if (editMode) { // 편집 모드: 즉시 드래그로 이동, 놓으면 위치 저장 (클릭 동작 없음)
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { offX = view.x - e.rawX; offY = view.y - e.rawY; view.scaleX = 1.15f; view.scaleY = 1.15f }
+                        MotionEvent.ACTION_MOVE -> {
+                            view.parent.requestDisallowInterceptTouchEvent(true)
+                            val pw = layer.width.toFloat(); val ph = layer.height.toFloat()
+                            view.x = (e.rawX + offX).coerceIn(0f, pw - view.width); view.y = (e.rawY + offY).coerceIn(0f, ph - view.height)
+                        }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            view.scaleX = 1f; view.scaleY = 1f
+                            val k = resources.getResourceEntryName(view.id)
+                            prefs.edit().putFloat("bx_$k", view.x / layer.width).putFloat("by_$k", view.y / layer.height).apply()
+                        }
+                    }
+                    return@setOnTouchListener true
+                }
+                if (view.id == R.id.downBtn) { // 탭=1페이지 이동, 꾹=연속 스크롤
+                    when (e.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { held = false; cancelled = false; downX = e.rawX; downY = e.rawY; handler2.postDelayed(holdStart, 400) }
+                        MotionEvent.ACTION_MOVE -> if (!held && (abs(e.rawX - downX) > slop * 3 || abs(e.rawY - downY) > slop * 3)) { cancelled = true; handler2.removeCallbacks(holdStart) }
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                            handler2.removeCallbacks(holdStart)
+                            if (held) { stopHold(); held = false }
+                            else if (e.actionMasked == MotionEvent.ACTION_UP && !cancelled) view.performClick()
+                        }
+                    }
+                } else if (e.actionMasked == MotionEvent.ACTION_UP) view.performClick()
+                true
+            }
+        }
+    }
+    private val handler2 = Handler(Looper.getMainLooper()) // onPageStarted의 handler 정리와 분리
+    private fun resetBtnPositions() {
+        val ed = prefs.edit(); prefs.all.keys.filter { it.startsWith("bx_") || it.startsWith("by_") }.forEach { ed.remove(it) }; ed.apply()
+        placeBtns()
+    }
+
+    /** 이미지 너비: 웹뷰 좌우에 검정 여백을 주어 페이지를 좁게(작게) 표시 */
+    private fun applyScale() {
+        val rw = if (rootW > 0) rootW else resources.displayMetrics.widthPixels
+        val m = (rw * (100 - imgScale) / 200f).toInt()
+        val lp = web.layoutParams as FrameLayout.LayoutParams
+        if (lp.leftMargin != m + insetL || lp.rightMargin != m + insetR) { lp.leftMargin = m + insetL; lp.rightMargin = m + insetR; web.layoutParams = lp }
+    }
+    private fun applyBtnAlpha() { floatBtns().forEach { it.alpha = btnAlpha / 100f } }
+    private fun updateTwoBtn() { twoBtn.isSelected = two }
+    private fun applyTwo(v: Boolean) {
+        val was = two; two = v; updateTwoBtn()
+        if (was && !v) web.reload() else injectScript()
+    }
+    private fun injectScript() {
+        snapInfo = null // 레이아웃이 바뀔 수 있으므로 이미지 위치 정보 폐기
+        if (two) quietUntil = System.currentTimeMillis() + 9000
+        web.evaluateJavascript(
+            SCRIPT.replace("__TWO__", "$two").replace("__RTL__", "$rtl").replace("__GAP__", "$gap"), null
+        )
+    }
+
+    // ---- 전체화면(아래로 스크롤=숨김, 위로 스크롤=표시) ----
+    private var full = false
+    private var menuAnim: ValueAnimator? = null
+    private var fullLockUntil = 0L
+    private var dyAcc = 0
+    private var touching = false
+    private var touchEndAt = 0L
+    /** 손가락 스크롤(드래그/플링 관성 포함)인지 — 레이아웃 변화·코드 스크롤로 인한 가짜 '위로 스크롤'을 걸러냄 */
+    private fun userScrolling() = touching || System.currentTimeMillis() - touchEndAt < 1500
+    /** 창 포커스를 되찾을 때(다이얼로그/알림창 등 이후) 시스템 바가 다시 나타나 있으면 숨김 상태를 복원 */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && full) applySystemBars(true)
+    }
+    /** 화면 전체(상태바·카메라 영역 포함)를 앱이 그리고, 시스템 바가 보일 때만 그 높이만큼 메뉴/웹뷰 여백을 둠 */
+    @Suppress("DEPRECATION")
+    private fun setupEdgeToEdge() {
+        val rootV = findViewById<View>(R.id.root)
+        if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
+        else window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        rootV.setOnApplyWindowInsetsListener { _, insets ->
+            val top: Int; val bottom: Int; val left: Int; val right: Int
+            if (Build.VERSION.SDK_INT >= 30) { val b = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()); top = b.top; bottom = b.bottom; left = b.left; right = b.right }
+            else { top = insets.systemWindowInsetTop; bottom = insets.systemWindowInsetBottom; left = insets.systemWindowInsetLeft; right = insets.systemWindowInsetRight }
+            if (insetL != left || insetR != right) { insetL = left; insetR = right; applyScale() }
+            (track.layoutParams as FrameLayout.LayoutParams).let { if (it.bottomMargin != bottom + (16 * density).toInt() || it.rightMargin != right) { it.bottomMargin = bottom + (16 * density).toInt(); it.rightMargin = right; track.layoutParams = it } }
+            (nextBtn.layoutParams as FrameLayout.LayoutParams).let { val nb = bottom + (24 * density).toInt(); if (it.bottomMargin != nb) { it.bottomMargin = nb; nextBtn.layoutParams = it } }
+            findViewById<View>(R.id.noticeView).let { nv -> (nv.layoutParams as FrameLayout.LayoutParams).let { val nb = bottom + (96 * density).toInt(); if (it.bottomMargin != nb) { it.bottomMargin = nb; nv.layoutParams = it } } }
+            val bar = findViewById<View>(R.id.topBar)
+            if (Build.VERSION.SDK_INT >= 30) { if (insets.isVisible(WindowInsets.Type.statusBars())) barInset = insets.getInsets(WindowInsets.Type.statusBars()).top }
+            else if (!full && top > 0) barInset = top
+            if (bottom > 0) navInset = bottom
+            if (bar.paddingTop != top || bar.paddingLeft != left || bar.paddingRight != right) bar.setPadding(left, top, right, 0)
+            val lp = web.layoutParams as FrameLayout.LayoutParams
+            if (lp.bottomMargin != bottom) { lp.bottomMargin = bottom; web.layoutParams = lp }
+            insets
+        }
+        rootV.requestApplyInsets()
+    }
+
+    private fun applySystemBars(hide: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let {
+                if (hide) { it.hide(WindowInsets.Type.systemBars()); it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE }
+                else it.show(WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (hide) (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION) else (View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
+        }
+    }
+    private fun setFull(v: Boolean) {
+        if (v && editMode) return // 버튼 편집 중에는 메뉴를 숨기지 않음
+        if (full == v) return
+        full = v; fullLockUntil = System.currentTimeMillis() + 500; dyAcc = 0
+        if (v) urlInput.clearFocus() // 메뉴가 숨겨지면 주소창 편집 상태 해제(이후 주소 자동 갱신)
+        // 메뉴 표시/숨김 애니메이션(300ms, One UI 유사 곡선): 메뉴가 나오면 웹페이지가 아래로 밀리고, 숨기면 위로 올라옴
+        if (!v) topBar.setPadding(insetL, barInset, insetR, 0) // 메뉴를 열면 상태바도 다시 나오므로 그 높이를 미리 포함
+        run { // 숨김(GONE) 상태의 이전 높이가 낡았을 수 있어 항상 다시 측정
+            topBar.measure(View.MeasureSpec.makeMeasureSpec(if (rootW > 0) rootW else resources.displayMetrics.widthPixels, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        }
+        val h = topBar.measuredHeight.coerceAtLeast(1)
+        val lp = web.layoutParams as FrameLayout.LayoutParams
+        val from = (lp.topMargin + web.translationY).toInt() // 현재 눈에 보이는 웹페이지 상단 위치
+        menuAnim?.cancel()
+        topBar.visibility = View.VISIBLE
+        // 애니메이션 동안 웹뷰의 레이아웃은 항상 '큰 쪽'(위 여백 0)으로 두고 translationY 로만 움직임(레이아웃 1회):
+        //  - 숨길 때: 위로 올라가며 아래쪽은 화면 밖으로 밀려남
+        //  - 열 때: 아래로 내려오며 아래쪽은 시스템 바 영역에서 잘라냄(clipBounds) → 아래쪽에 빈(검은) 띠가 생기지 않음
+        // 열기가 끝난 뒤에만 최종 여백(메뉴 높이)을 적용(보이는 모양은 그대로)
+        lp.topMargin = 0; web.layoutParams = lp
+        web.translationY = from.toFloat()
+        val target = if (v) 0f else h.toFloat()
+        menuAnim = ValueAnimator.ofFloat(from.toFloat(), target).apply {
+            duration = if (calmMode) 0 else 300; interpolator = android.view.animation.PathInterpolator(0.33f, 0f, 0.67f, 1f) // 멀미 방지: 메뉴 전환 즉시
+            addUpdateListener {
+                val ty = it.animatedValue as Float // 눈에 보이는 웹페이지 상단 위치
+                web.translationY = ty
+                topBar.translationY = ty - h; topBar.alpha = (ty / h).coerceIn(0f, 1f)
+                if (!v) web.clipBounds = android.graphics.Rect(0, 0, web.width, (web.height - ty.toInt()).coerceAtLeast(1))
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    web.clipBounds = null
+                    if (cancelled) return // 다음 setFull 이 현재 보이는 위치(위 여백 0 + translationY)에서 이어서 시작
+                    if (full) { web.translationY = 0f; topBar.visibility = View.GONE }
+                    else {
+                        val p3 = web.layoutParams as FrameLayout.LayoutParams
+                        p3.topMargin = if (topBar.height > 0) topBar.height else h
+                        web.translationY = 0f; web.layoutParams = p3
+                    }
+                }
+            })
+            start()
+        }
+        applySystemBars(v)
+    }
+
+    private var atBottomShown = false
+    private fun atBottom() = web.contentHeight > 0 && web.scrollY > 0 &&
+        web.scrollY + web.height >= web.contentHeight * density - 80
+
+    // ---- 스크롤바: 오른쪽 가장자리를 터치/드래그해 원하는 위치로 이동 ----
+    @SuppressLint("ClickableViewAccessibility")
+    private fun initScrollBar() {
+        track = findViewById(R.id.scrollTrack); thumb = findViewById(R.id.scrollThumb)
+        val thumbBg = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 3 * density; setColor(getColor(R.color.thumb_idle)) }
+        thumb.background = thumbBg
+        fun grabStyle(on: Boolean) {
+            thumbBg.setColor(getColor(if (on) R.color.accent else R.color.thumb_idle))
+            thumb.pivotX = thumb.width.toFloat(); thumb.animate().scaleX(if (on) 1.8f else 1f).setDuration(if (calmMode) 0L else 120L).start()
+        }
+        var grab = 0f; var dragging = false
+        track.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    // 손잡이를 직접 잡았을 때만 드래그 시작 (트랙의 다른 곳 터치는 무시)
+                    val top = thumb.translationY
+                    if (thumb.visibility == View.VISIBLE && e.y >= top - 28 * density && e.y <= top + thumb.height + 28 * density) {
+                        dragging = true; grab = e.y - top; grabStyle(true)
+                        applyAuto(false); pageAnim?.cancel()
+                        track.parent.requestDisallowInterceptTouchEvent(true)
+                        true
+                    } else false
+                }
+                MotionEvent.ACTION_MOVE -> if (dragging) {
+                    val range = web.contentHeight * density - web.height
+                    val avail = (track.height - thumb.height).coerceAtLeast(1)
+                    val r = ((e.y - grab) / avail).coerceIn(0f, 1f)
+                    if (range > 0) web.scrollTo(0, (r * range).toInt())
+                    updateThumb(); true
+                } else false
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { val was = dragging; dragging = false; if (was) grabStyle(false); was }
+                else -> dragging
+            }
+        }
+        val tick = object : Runnable { override fun run() {
+            try { if (calmMode && ++calmSeconds >= 1200) { calmSeconds = 0; Toast.makeText(this@MainActivity, "20분 지남 · 잠깐 쉬기", Toast.LENGTH_LONG).show() }
+                updateThumb(); updateBottomState(); checkTitle(); if (++analyzeTick % 3 == 0) scheduleAnalysis() } catch (_: Exception) { /* 저장 데이터 이상 등으로 1초 주기 작업이 앱을 종료시키지 않게 */ }
+            track.postDelayed(this, 1000)
+        } }
+        track.postDelayed(tick, 1000)
+    }
+    private fun updateThumb() {
+        val range = web.contentHeight * density - web.height
+        if (range <= 0) { thumb.visibility = View.GONE; return }
+        thumb.visibility = View.VISIBLE
+        val avail = (track.height - thumb.height).coerceAtLeast(0)
+        thumb.translationY = (web.scrollY / range).coerceIn(0f, 1f) * avail
+    }
+
+    private val saveRun = Runnable { savePosNow() }
+    private var lastScrollWork = 0L
+    private fun onScrolled(y: Int, dy: Int) {
+        if (System.currentTimeMillis() < quietUntil && !userScrolling()) { updateThumb(); return } // 두쪽 준비 중 코드 스크롤만 무시(손가락 스크롤은 처리)
+        if (System.currentTimeMillis() > fullLockUntil) { // 아래로 스크롤=메뉴 숨김, 위로 스크롤(또는 맨 위)=메뉴 표시
+            dyAcc = if ((dyAcc > 0) == (dy > 0)) dyAcc + dy else dy
+            if (dyAcc > 40) setFull(true) else if (userScrolling() && (dyAcc < -140 * density || y < 20)) setFull(false)
+        }
+        // 나머지 부가 작업(스크롤바·바닥 감지·저장/분석 예약)은 초당 30회 이하로 제한: 웹뷰 값 조회와 핸들러 작업이 이동 애니메이션을 방해하지 않게
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastScrollWork < 33) return
+        lastScrollWork = now
+        flowTick()
+        updateThumb()
+        updateBottomState()
+        if (snapImg) { handler.removeCallbacks(analyzeRun); handler.postDelayed(analyzeRun, 500) } // 스크롤이 멈춘 뒤 갱신
+        if (saving && curKey != null) { handler.removeCallbacks(saveRun); handler.postDelayed(saveRun, 800) }
+    }
+
+    /** 맨 아래 도달 여부에 따라 '다음화' 버튼 표시, 자동 스크롤 중이면 다음 화로 이동 예약 */
+    private fun updateBottomState() {
+        val b = atBottom()
+        if (b != atBottomShown) { atBottomShown = b; nextBtn.visibility = if (b) View.VISIBLE else View.GONE
+            if (b && auto && autoNext) { applyAuto(false); armResume(); handler.postDelayed({ if (resumeAuto) goNext() }, 1200) } }
+    }
+
+    // ---- 다음화 ----
+    private var lastNextAt = 0L
+    private fun goNext() {
+        if (System.currentTimeMillis() - lastNextAt < 3000) return // 연속 호출로 두 화를 건너뛰는 것 방지
+        lastNextAt = System.currentTimeMillis()
+        nextBtn.visibility = View.GONE
+        web.evaluateJavascript("window.__cvNext?window.__cvNext(true):''") { r ->
+            if (r == null || r == "\"\"" || r == "null") { resumeAuto = false; Toast.makeText(this, "다음화 없음", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    // ---- 스크롤 ----
+    /** 메뉴를 열었을 때의 높이(상태바 포함) */
+    private fun menuHeightPx(): Int {
+        topBar.setPadding(insetL, barInset, insetR, 0)
+        topBar.measure(View.MeasureSpec.makeMeasureSpec(if (rootW > 0) rootW else resources.displayMetrics.widthPixels, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        return topBar.measuredHeight
+    }
+
+    /** onDecided(이동 비율(0~1, 설정 이동 거리 대비 실제), 이동 시간 ms): 실제 이동이 정해진 시점에 호출(자동 방식2 대기 계산용) */
+    private fun pageScroll(dir: Int, onDecided: ((Float, Int) -> Unit)? = null) {
+        // 메뉴 상태가 바뀐 뒤의 최종 웹뷰 높이를 setFull 호출 전에 계산(setFull이 여백을 즉시 바꾸므로)
+        val wasFull = full
+        val finalH = if (editMode) web.height
+            else if (dir > 0 && !wasFull) web.height + (web.layoutParams as FrameLayout.LayoutParams).let { it.topMargin + it.bottomMargin } // 메뉴·시스템바가 숨겨져 높이가 늘어남
+            else if (dir < 0 && wasFull) (web.height - menuHeightPx() - navInset).coerceAtLeast(1) // 메뉴가 다시 나와 높이가 줄어듦
+            else web.height
+        setFull(dir > 0)
+        if (dir > 0 && autoNext && atBottom()) { goNext(); return }
+        val dist = (finalH * (if (two) pageRatio2 else pageRatio) / 100f).toInt() * dir
+        if (!snapImg) { animateScroll(dist); onDecided?.invoke(1f, smoothMs); return }
+        // 이동은 바로 시작: 직전에 갱신해 둔 이미지 위치 정보가 신선하면 그것으로 경계를 계산하고, 없으면 일반 이동 후 정보를 갱신
+        val info = snapInfo
+        if (info == null || System.currentTimeMillis() - snapInfoAt > 6000) {
+            animateScroll(dist); onDecided?.invoke(1f, smoothMs); scheduleAnalysis(); return
+        }
+        val d = computeSnap(info, dist, finalH)
+        // 이동 시간 설정은 '기본 이동 거리' 기준이므로, 실제 이동한 거리 비율만큼 보정해 속도가 일정하게 느껴지게 함
+        val ms = if (d == null || dist == 0) smoothMs else (smoothMs * abs(d).toFloat() / abs(dist)).toInt().coerceIn(minOf(smoothMs, 120), smoothMs * 8)
+        animateScroll(d ?: dist, ms)
+        onDecided?.invoke(if (d == null || dist == 0) 1f else (abs(d).toFloat() / abs(dist)).coerceIn(0f, 1f), ms)
+    }
+
+    private var animTargetY = 0 // 진행 중인 페이지 이동 애니메이션의 최종 scrollY(px)
+    private var maskOn = false
+    private var calmSeconds = 0
+    private fun setMask(on: Boolean) {
+        maskOn = on
+        findViewById<View>(R.id.refDot).visibility = if (on) View.VISIBLE else View.GONE
+        listOf(R.id.maskTop, R.id.maskBottom).forEach { findViewById<View>(it).animate().alpha(if (on) 1f else 0f).setDuration(if (on) 150L else 400L).start() }
+    }
+    private val hideMask = Runnable { setMask(false) }
+    /** 멀미 방지: 화면이 흐르는 동안에만 위아래 가장자리를 어둡게 덮어 움직이는 면적을 줄임(시야 제한) */
+    private fun flowTick() {
+        if (!calmMode) return
+        if (!maskOn) setMask(true)
+        handler2.removeCallbacks(hideMask); handler2.postDelayed(hideMask, 350)
+    }
+    private fun animateScroll(dist: Int, ms: Int = smoothMs) {
+        pageAnim?.cancel()
+        animTargetY = web.scrollY + dist
+        if (ms == 0) { web.scrollBy(0, dist); return }
+        var done = 0
+        pageAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = ms.toLong()
+            interpolator = if (calmMode) android.view.animation.PathInterpolator(0.37f, 0f, 0.63f, 1f) else AccelerateDecelerateInterpolator() // 멀미 방지: 아주 천천히 출발하고 천천히 멈춤(sine)
+            addUpdateListener {
+                val target = (it.animatedValue as Float * dist).toInt()
+                web.scrollBy(0, target - done); done = target
+            }
+            start()
+        }
+    }
+
+    /**
+     * 단색 판정 영역 편집기: 화면에 사각형을 띄워 드래그(이동)·모서리(크기)로 지정.
+     * 가로 위치/길이는 웹페이지 너비 대비 %, 세로 길이는 dp(=단색 띠 최소 높이)로 저장.
+     */
+    private var settingsDlg: Dialog? = null
+    private var regionScrim: View? = null
+    private fun closeRegionEditor(): Boolean { val v = regionScrim ?: return false; (v.parent as? ViewGroup)?.removeView(v); regionScrim = null; return true }
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showRegionEditor() {
+        val root = findViewById<FrameLayout>(R.id.root)
+        val lpw = web.layoutParams as FrameLayout.LayoutParams
+        val webL = lpw.leftMargin.toFloat(); val fullW = web.width.toFloat()
+        // 두쪽 보기에서는 이미지 폭 = 한 칸 폭이므로 왼쪽 칸 기준 %로 저장
+        val webW = if (two) (fullW - gap * density) / 2f else fullW
+        val scrim = FrameLayout(this).apply { setBackgroundColor(col(R.color.scrim)); isClickable = true; elevation = 30f; clipChildren = false }
+        val rect = FrameLayout(this).apply {
+            clipChildren = false // 모서리 핸들이 사각형 밖으로 나가도 터치 가능
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 6 * density; setColor(0x298E9DFF); setStroke((2 * density).toInt(), col(R.color.accent)) }
+        }
+        val minPx = 20 * density
+        var rl = webL + webW * blackL / 100f; var rw = webW * blackW / 100f
+        var rh = blackH * density; var rt = (root.height - rh) / 2f
+        var infoRef: TextView? = null
+        fun apply() {
+            val lp = FrameLayout.LayoutParams(rw.toInt(), rh.toInt()); lp.leftMargin = rl.toInt(); lp.topMargin = rt.toInt(); rect.layoutParams = lp
+            infoRef?.text = "${((rl - webL) / webW * 100).toInt().coerceIn(0, 100)}% · ${(rw / webW * 100).toInt().coerceIn(0, 100)}% · ${(rh / density).toInt()}dp"
+        }
+        fun clamp() {
+            rw = rw.coerceIn(minPx, webW); rh = rh.coerceIn(minPx, root.height.toFloat())
+            rl = rl.coerceIn(webL, webL + webW - rw); rt = rt.coerceIn(0f, root.height - rh)
+        }
+        clamp(); scrim.addView(rect); apply()
+        val hs = (44 * density).toInt()
+        fun drag(v: View, onMove: (dx: Float, dy: Float, l: Float, t: Float, w: Float, h: Float) -> Unit) {
+            var sx = 0f; var sy = 0f; var l0 = 0f; var t0 = 0f; var w0 = 0f; var h0 = 0f
+            v.setOnTouchListener { _, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; l0 = rl; t0 = rt; w0 = rw; h0 = rh }
+                    MotionEvent.ACTION_MOVE -> { onMove(e.rawX - sx, e.rawY - sy, l0, t0, w0, h0); clamp(); apply() }
+                }
+                true
+            }
+        }
+        drag(rect) { dx, dy, l, t, _, _ -> rl = l + dx; rt = t + dy }
+        listOf("nw", "ne", "sw", "se").forEach { c ->
+            val h = View(this).apply { // 눈에 보이는 점은 22dp, 터치 영역은 44dp
+                val dot = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFFFFFFF.toInt()); setStroke((3 * density).toInt(), col(R.color.accent)) }
+                background = android.graphics.drawable.InsetDrawable(dot, (11 * density).toInt())
+            }
+            val lp = FrameLayout.LayoutParams(hs, hs)
+            lp.gravity = (if (c[0] == 'n') Gravity.TOP else Gravity.BOTTOM) or (if (c[1] == 'w') Gravity.START else Gravity.END)
+            lp.leftMargin = -hs / 3; lp.rightMargin = -hs / 3; lp.topMargin = -hs / 3; lp.bottomMargin = -hs / 3
+            rect.addView(h, lp)
+            drag(h) { dx, dy, l, t, w, hh ->
+                // 서쪽/북쪽 핸들은 반대편 변을 고정하고 이 변만 이동(최소 크기·경계 안에서)
+                if (c[1] == 'e') rw = w + dx else { val r = l + w; rl = (l + dx).coerceIn(webL, maxOf(webL, r - minPx)); rw = r - rl }
+                if (c[0] == 's') rh = hh + dy else { val b = t + hh; rt = (t + dy).coerceIn(0f, maxOf(0f, b - minPx)); rh = b - rt }
+            }
+        }
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundResource(R.drawable.bg_menu_card); setPadding(dp(16), dp(8), dp(8), dp(8)) }
+        val info = TextView(this).apply { setTextColor(col(R.color.txt2)); textSize = 14f; gravity = Gravity.CENTER_VERTICAL }
+        infoRef = info; apply()
+        bar.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(pillButton("취소", R.drawable.bg_btn_small_tonal, col(R.color.txt), 40, 14f).apply { setOnClickListener { closeRegionEditor() } },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)).apply { marginEnd = dp(6) })
+        bar.addView(pillButton("확인", R.drawable.bg_btn_small_accent, col(R.color.on_accent), 40, 14f).apply { setOnClickListener {
+            blackL = ((rl - webL) / webW * 100f).toInt().coerceIn(0, 90)
+            blackW = (rw / webW * 100f).toInt().coerceIn(10, 100)
+            blackH = (rh / density).toInt().coerceIn(10, 300)
+            analyzer.clear(); scheduleAnalysis()
+            closeRegionEditor()
+            Toast.makeText(this@MainActivity, "영역 ${blackL}% · ${blackW}% · ${blackH}dp", Toast.LENGTH_SHORT).show()
+        } }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
+        scrim.addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
+            leftMargin = dp(10) + insetL; rightMargin = dp(10) + insetR; bottomMargin = dp(10) + (web.layoutParams as FrameLayout.LayoutParams).bottomMargin })
+        root.addView(scrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        regionScrim = scrim
+    }
+
+    // ---- 경계 멈춤: 이미지를 미리 내려받아 분석한 단색 띠 위치로 목표 지점을 정함(이동 중 되돌림 없음) ----
+    private val analyzer = BandAnalyzer()
+    private val rescan = Runnable { analyzer.clear(); scheduleAnalysis() } // 슬라이더 조작 중 연속 재분석 방지(디바운스)
+    private var analyzeTick = 0
+    private class Img(val src: String, val t: Float, val h: Float)
+
+    private class Parsed(val imgs: List<Img>, val blk: List<FloatArray>)
+
+    private fun parseImgs(r: String?): Parsed? = try {
+        val o = JSONObject(org.json.JSONTokener(r ?: "").nextValue() as String)
+        val a = o.getJSONArray("imgs")
+        val bk = o.optJSONArray("blk")
+        Parsed(
+            List(a.length()) { a.getJSONObject(it).let { j -> Img(j.getString("s"), j.getDouble("t").toFloat(), j.getDouble("h").toFloat()) } },
+            if (bk == null) emptyList() else List(bk.length()) { bk.getJSONObject(it).let { j -> floatArrayOf(j.getDouble("t").toFloat(), j.getDouble("h").toFloat()) } })
+    } catch (_: Exception) { null }
+
+    /** 주기적으로 페이지의 큰 이미지를 찾아 아직 분석하지 않은 것을 백그라운드로 분석 요청 */
+    private var snapInfo: Parsed? = null // 마지막으로 읽은 이미지 위치 정보(이동 시 즉시 계산용)
+    private var snapInfoAt = 0L
+    private val analyzeRun = Runnable { scheduleAnalysis() }
+    private fun scheduleAnalysis() {
+        if (!snapImg || web.progress < 100) return // 페이지 로딩이 끝난 뒤에만 분석(로딩을 방해하지 않음)
+        web.evaluateJavascript("window.__cvImgs?window.__cvImgs():''") { r ->
+            val p = parseImgs(r) ?: return@evaluateJavascript
+            snapInfo = p; snapInfoAt = System.currentTimeMillis()
+            // 현재 화면 + 다음에 이동할 화면 범위의 이미지만 미리 내려받아 분석(나머지는 이동해 가면서)
+            val h = web.height / density; val cur = web.scrollY / density
+            val vis = if (two) 2 * h else h
+            val d = minOf(h * (if (two) pageRatio2 else pageRatio) / 100f, 3f * h)
+            val lo = cur - 0.5f * h; val hi = cur + vis + d + 0.5f * h
+            p.imgs.filter { it.t + it.h >= lo && it.t <= hi && it.src.startsWith("http") }
+                .sortedBy { abs(it.t - cur) }
+                .forEach { analyzer.enqueue(it.src, web.url ?: "", colorTol, blackL, blackW) }
+        }
+    }
+
+    /** css px 단위의 단색 띠 목록 [top, bottom, 최소높이] : 이미지 안의 단색 행 + 이미지 사이 빈틈(안에 다른 요소가 없을 때만) */
+    private fun bandsOf(p: Parsed): List<FloatArray> {
+        // raw: [top, bottom, 필요한 최소 높이, 색 변화로 시작한 띠(1)]. 가장자리에 닿은 띠/이미지 사이 빈틈은 blackH, 이미지 안쪽 단색 구간(하늘·말풍선 등)은 더 크게 요구
+        val raw = ArrayList<FloatArray>()
+        var maxBottom = Float.NEGATIVE_INFINITY
+        val gapCap = maxOf(blackH * 6f, 400f)
+        p.imgs.forEachIndexed { i, im ->
+            analyzer.cached(im.src, colorTol, blackL, blackW)?.forEach {
+                val edge = it[0] * im.h <= 4f || (1f - it[1]) * im.h <= 4f // 가장자리 판정은 px 기준(이미지 높이와 무관)
+                val req = if (edge) blackH.toFloat() else maxOf(2f * blackH, 0.15f * im.h)
+                raw.add(floatArrayOf(im.t + it[0] * im.h, im.t + it[1] * im.h, req, it[2]))
+            }
+            if (i > 0) {
+                val gap = im.t - maxBottom
+                // 빈틈이 너무 크거나(내용이 있을 가능성), 그 안에 광고/작은 조각/미로딩 이미지가 있으면 경계로 보지 않음
+                if (gap > 0f && gap <= gapCap && p.blk.none { it[0] < im.t && it[0] + it[1] > maxBottom })
+                    raw.add(floatArrayOf(maxBottom, im.t, blackH.toFloat(), 0f))
+            }
+            maxBottom = maxOf(maxBottom, im.t + im.h)
+        }
+        raw.sortBy { it[0] }
+        val merged = ArrayList<FloatArray>()
+        for (b in raw) {
+            val last = merged.lastOrNull()
+            // 색이 바뀌며 이어진 띠(그라데이션)는 합치지 않아 하나의 큰 띠로 오인되지 않게 함
+            if (last != null && b[0] - last[1] <= 8f && b[3] == 0f) { last[1] = maxOf(last[1], b[1]); last[2] = minOf(last[2], b[2]) }
+            else merged.add(floatArrayOf(b[0], b[1], b[2], b[3]))
+        }
+        return merged.filter { it[1] - it[0] >= it[2] }
+    }
+
+    /** 이동 목표를 단색 띠 앞/뒤로 조정(멈춤·건너뜀). 설정한 무시 구간(%) 이내의 띠는 무시. 해당 없으면 null(일반 이동) */
+    private fun computeSnap(parsed: Parsed, dist: Int, viewH: Int): Int? {
+        val bands = bandsOf(parsed)
+        // 이동 애니메이션이 진행 중이면 그 목표 위치를 현재 위치로 사용(연타 시 어긋남 방지)
+        val curPx = if (pageAnim?.isRunning == true) animTargetY else web.scrollY
+        val cur = curPx / density; val hCss = viewH / density
+        val visH = if (two) 2 * hCss else hCss // 두쪽 보기는 오른쪽 칸 끝까지가 보이는 범위
+        val d = abs(dist) / density
+        val tol = 12f
+        val m = skipTopPct / 100f * hCss // 화면 높이의 N%만큼 위를 비워 다음 이미지 윗부분이 카메라에 가려지지 않게
+        val mb = stopBottomPct / 100f * hCss // 경계에서 멈출 때 화면 아래에 남길 여백(경계 띠를 그만큼 보여줌)
+        // 이미 경계 바로 앞에서 멈춘 상태라면, 다음 이동은 경계(단색 띠)를 건너뛰어 다음 이미지 맨 위가 보이게 함
+        if (skipBand) {
+            if (dist > 0) {
+                // 경계 뛰어넘기가 x% 이동보다 우선: (1) 경계 바로 앞에 멈춰 있거나 (2) 경계가 화면 안에 보이고 건너뛰는 이동량이 최소 y%(무시 구간) 이상이면 경계를 건너뜀
+                val minMove = (ignorePct / 100f) * d
+                val b = bands.firstOrNull { abs(it[0] + mb - (cur + visH)) <= tol }
+                    ?: bands.firstOrNull { it[0] > cur && it[0] < cur + visH - tol && (it[1] - m - cur) >= minMove }
+                if (b != null) { val t = ((b[1] - m - cur) * density).toInt(); if (t > 4) return t }
+            } else bands.lastOrNull { abs(it[1] - cur) <= tol || abs(it[1] - m - cur) <= tol }?.let { b ->
+                val t = ((b[0] + m - visH - cur) * density).toInt(); if (t < -4) return t // 위로: 윗 이미지의 끝이 화면 아래에 오도록
+            }
+        }
+        // 건너뜀 직후(띠 아래끝이 화면 위 여백 위치)에는 무시 구간 없이 다음 경계에 멈춤(그렇지 않으면 짧은 이미지에서 다음 이미지로 넘어가 버림)
+        val landed = skipBand && bands.any { abs(it[1] - m - cur) <= tol }
+        val ig = if (landed) 0f else (ignorePct / 100f) * d
+        val res = if (dist > 0) {
+            val b = bands.filter { it[0] + mb >= cur + visH + maxOf(ig, tol + 1f) && it[0] + mb <= cur + visH + d }.minByOrNull { it[0] } ?: return null
+            ((b[0] + mb - visH - cur) * density).toInt()
+        } else {
+            val b = bands.filter { it[1] <= cur - maxOf(ig, tol + 1f) && it[1] >= cur - d }.maxByOrNull { it[1] } ?: return null
+            -((cur - b[1]) * density).toInt()
+        }
+        return if (abs(res) < 4) null else res // 이동량이 거의 0이면(멈춤 위치에 이미 있음) 일반 이동
+    }
+
+    private val frame = object : Choreographer.FrameCallback {
+        var last = 0L; var acc = 0f; var t0 = 0L
+        override fun doFrame(t: Long) {
+            if (!auto) return
+            if (t0 == 0L) t0 = t
+            if (last != 0L) {
+                val ramp = if (calmMode) minOf(1f, (t - t0) / 1.5e9f) else 1f // 멀미 방지: 1.5초에 걸쳐 속도를 서서히 올림(급출발 방지)
+                acc += autoSpeed * ramp * (t - last) / 1e9f
+                val d = acc.toInt()
+                if (d != 0) { web.scrollBy(0, d); acc -= d }
+            }
+            last = t
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    /** 자동 방식2: 1페이지 이동 → 설정한 시간 대기 → 반복 */
+    private val pageAutoRun = object : Runnable {
+        override fun run() {
+            if (!auto) return
+            if (atBottom()) {
+                applyAuto(false)
+                if (autoNext) { armResume(); goNext() }
+                return
+            }
+            pageScroll(1) { ratio, ms -> // 설정 거리만큼 이동했으면 설정 대기, 경계로 덜 이동했으면(옵션) 줄어든 비율만큼 덜 대기
+                // 대기 = 최소 + (최대 - 최소) × 이동 비율  (최대 = 설정 대기시간, 최소 = 최소 대기시간)
+                val maxW = autoWait * 100L; val minW = minOf(autoWaitMin * 100L, maxW)
+                val wait = if (autoWaitScale) minW + (maxW - minW) * ratio else maxW.toFloat()
+                if (auto && autoPageMode) { handler.removeCallbacks(this); handler.postDelayed(this, wait.toLong() + ms) } // 비동기 콜백이 겹쳐 두 갈래로 도는 것 방지
+            }
+        }
+    }
+
+    private fun applyAuto(v: Boolean) {
+        if (auto == v) return
+        auto = v; autoBtn.text = if (v) "stop" else "auto"; applyCalm()
+        if (v) {
+            pageAnim?.cancel()
+            if (autoPageMode) handler.post(pageAutoRun)
+            else { frame.last = 0L; frame.acc = 0f; frame.t0 = 0L; Choreographer.getInstance().postFrameCallback(frame) }
+        } else {
+            Choreographer.getInstance().removeFrameCallback(frame)
+            handler.removeCallbacks(pageAutoRun)
+        }
+    }
+
+    // ================= 웹툰 기록 / 이어보기 =================
+    private var curKey: String? = null
+    private var saving = false
+
+    private fun norm(s: String) = s.lowercase().replace(Regex("[\\s\\p{Punct}·]"), "")
+
+    /** 탭 제목 → (웹툰명, 화수). "웹툰명 12화 - 사이트", "1화, 소제목 > 웹툰명 > 사이트" 등 */
+    private fun parseTitle(t: String): Pair<String, Int>? {
+        val re1 = Regex("(\\d+)\\s*(화|회|편|話|话)"); val re2 = Regex("(?i)(?:ep\\.?|episode|chapter|ch\\.?)\\s*(\\d+)")
+        val segs = t.split(Regex("\\s*[>|·–—:/«»_]\\s*|\\s-\\s")).map { it.trim() }.filter { it.isNotEmpty() }
+        val idx = segs.indexOfFirst { re1.containsMatchIn(it) || re2.containsMatchIn(it) }
+        if (idx < 0) return null
+        val seg = segs[idx]
+        val m = re1.find(seg) ?: re2.find(seg) ?: return null
+        val ep = m.groupValues[1].toIntOrNull() ?: return null
+        var name = seg.substring(0, m.range.first).trim().trimEnd(',', ' ', '-').replace(Regex("\\s제$"), "").trim() // 같은 조각 안의 앞부분
+        if (name.isEmpty()) name = segs.getOrNull(idx - 1) ?: segs.getOrNull(idx + 1) ?: ""   // 없으면 앞 조각, 그다음 뒤 조각
+        if (name.isEmpty()) return null
+        return name to ep
+    }
+
+    private class Series(var name: String, val key: String, var last: Int, var max: Int, val eps: MutableSet<Int>, var url: String, var time: Long, var base: String = "")
+
+    /** 진단용: 최근 검사한 원본 이미지(최대 8장)와 진단 글을 다운로드 폴더(ComicViewerWM)에 저장 */
+    private fun saveWmSamples() {
+        val imgs = wm.engine.sampleImages()
+        if (imgs.isEmpty()) { Toast.makeText(this, "저장할 이미지가 없음: 웹툰 페이지를 열고 이미지가 뜬 뒤 눌러주세요", Toast.LENGTH_LONG).show(); return }
+        Thread {
+            var n = 0; var where = ""
+            try {
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                val diag = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n" + wm.engine.fullDiag()
+                fun put(name: String, mime: String, bytes: ByteArray) {
+                    if (android.os.Build.VERSION.SDK_INT >= 29) {
+                        val cv = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+                            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/ComicViewerWM")
+                        }
+                        val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv) ?: return
+                        contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                        where = "다운로드/ComicViewerWM"
+                    } else {
+                        val dir = java.io.File(getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "ComicViewerWM"); dir.mkdirs()
+                        java.io.File(dir, name).writeBytes(bytes); where = dir.absolutePath
+                    }
+                }
+                for ((i, b) in imgs.withIndex()) {
+                    val png = b.size > 8 && b[1] == 'P'.code.toByte() && b[2] == 'N'.code.toByte()
+                    val webp = b.size > 12 && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte()
+                    put("wm_${stamp}_${i + 1}" + (if (png) ".png" else if (webp) ".webp" else ".jpg"), if (png) "image/png" else if (webp) "image/webp" else "image/jpeg", b); n++
+                }
+                put("wm_${stamp}_diag.txt", "text/plain", diag.toByteArray(Charsets.UTF_8))
+            } catch (t: Throwable) { where = "실패: " + (t.message ?: t.javaClass.simpleName) }
+            runOnUiThread { Toast.makeText(this, if (n > 0 && !where.startsWith("실패")) "원본 ${n}장 + 진단 글 저장됨 → $where" else where, Toast.LENGTH_LONG).show() }
+        }.start()
+    }
+
+    private fun loadSeries(): MutableList<Series> = try { loadSeriesRaw() } catch (_: Exception) { mutableListOf() }
+    private fun loadSeriesRaw(): MutableList<Series> {
+        val a = JSONArray(prefs.getString("series", "[]"))
+        return MutableList(a.length()) {
+            val o = a.getJSONObject(it)
+            val e = o.getJSONArray("eps")
+            Series(o.getString("n"), o.getString("k"), o.getInt("last"), o.getInt("max"),
+                MutableList(e.length()) { i -> e.getInt(i) }.toMutableSet(), o.getString("u"), o.getLong("t"), o.optString("b", ""))
+        }
+    }
+    private fun saveSeries(all: List<Series>) {
+        val l = if (all.size > 5000) all.sortedByDescending { it.time }.take(5000) else all // 웹툰 기록: 최근 5000종류
+        val a = JSONArray()
+        l.forEach { a.put(JSONObject().put("n", it.name).put("k", it.key).put("last", it.last).put("max", it.max)
+            .put("eps", JSONArray(it.eps.sorted())).put("u", it.url).put("t", it.time).put("b", it.base)) }
+        prefs.edit().putString("series", a.toString()).apply()
+    }
+
+    private var lastTitle = ""
+    private val hideNotice = Runnable {
+        val v = findViewById<View>(R.id.noticeView)
+        if (calmMode) v.visibility = View.GONE
+        else v.animate().alpha(0f).translationY(12 * density).setDuration(180).withEndAction { v.visibility = View.GONE }.start()
+    }
+    private fun showNotice(title: String, sub: String? = null, action: String? = null, onAction: (() -> Unit)? = null) {
+        val v = findViewById<View>(R.id.noticeView)
+        findViewById<TextView>(R.id.noticeTitle).text = title
+        findViewById<TextView>(R.id.noticeSub).apply { text = sub ?: ""; visibility = if (sub.isNullOrEmpty()) View.GONE else View.VISIBLE }
+        findViewById<TextView>(R.id.noticeAction).apply {
+            if (action == null) { visibility = View.GONE; setOnClickListener(null) }
+            else { text = action; visibility = View.VISIBLE; setOnClickListener { handler2.removeCallbacks(hideNotice); v.visibility = View.GONE; onAction?.invoke() } }
+        }
+        v.animate().cancel()
+        v.visibility = View.VISIBLE
+        if (calmMode) { v.alpha = 1f; v.translationY = 0f }
+        else { v.alpha = 0f; v.translationY = 12 * density; v.animate().alpha(1f).translationY(0f).setDuration(220).start() }
+        handler2.removeCallbacks(hideNotice); handler2.postDelayed(hideNotice, 7000)
+    }
+    private fun parentUrl(u: String?): String? {
+        val x = u?.substringBefore('#')?.substringBefore('?')?.trimEnd('/') ?: return null
+        val i = x.lastIndexOf('/'); val schemeEnd = x.indexOf("://") + 2
+        return if (i > schemeEnd + 1 && x.substring(schemeEnd + 1, i).contains('/')) x.substring(0, i) else null // 경로가 2단계 이상일 때만
+    }
+    private fun cleanUrl(u: String?) = u?.substringBefore('#')?.substringBefore('?')?.trimEnd('/')
+
+    /** 저장된 웹툰의 목록(첫 페이지) 주소: 회차 주소의 상위 경로. 예전 기록은 마지막으로 본 회차 주소에서 계산 */
+    private fun baseOf(sr: Series) = sr.base.ifEmpty { parentUrl(sr.url) ?: "" }
+
+    /** 웹툰 첫 페이지(회차 목록)에 들어갈 때만: 주소가 저장된 웹툰의 목록 주소와 같으면 마지막으로 본 화를 알림(제목·본문 글자는 오탐이 많아 쓰지 않음) */
+    private fun showSeriesNotice(key: String) {
+        if (curKey != key) return
+        val here = cleanUrl(web.url) ?: return
+        val sr = loadSeries().firstOrNull { baseOf(it).isNotEmpty() && baseOf(it) == here } ?: return
+        val lastUrl = sr.url
+        showNotice(sr.name, "${sr.last}화까지 봄" + if (sr.max > sr.last) " · 최대 ${sr.max}화" else "",
+            if (lastUrl.isNotEmpty() && cleanUrl(lastUrl) != here) "이어보기" else null) { go(lastUrl) }
+    }
+    private var titleStable = 0
+
+    /** 현재 페이지를 식별하는 키를 정해 읽던 위치를 복원/저장. 제목에서 '웹툰명+N화'를 읽으면 그것(주소가 바뀌어도 유지), 못 읽으면 주소 */
+    private fun checkTitle() {
+        val url = web.url
+        if (url.isNullOrEmpty() || url == "about:blank") return
+        val title = web.title ?: ""
+        if (title == lastTitle) titleStable++ else { lastTitle = title; titleStable = 0 }
+        var parsed = parseTitle(title)
+        if (parsed != null && loadSeries().any { baseOf(it).isNotEmpty() && baseOf(it) == cleanUrl(url) }) parsed = null // 목록 주소면 회차가 아님('총 15화' 같은 제목 오인 방지)
+        if (parsed != null) { // 같은 웹툰 목록 주소 아래 회차면 이미 저장된 이름으로 통일(제목 형식 차이로 다른 웹툰으로 갈라지는 것 방지)
+            val par = parentUrl(url)
+            loadSeries().firstOrNull { par != null && it.base == par }?.let { parsed = it.name to parsed!!.second }
+        }
+        // 제목이 'N화' 형식이 아니면: 로딩이 끝나고 제목이 2회 연속 같을 때(제목이 늦게 바뀌는 사이트 대기) 주소를 키로 사용
+        val pr = parsed
+        if (pr == null && (web.progress < 100 || titleStable < 2)) return
+        val key = if (pr != null) norm(pr.first) + "|" + pr.second else "u|" + url.substringBefore('#')
+        if (key == curKey) return
+        curKey = key; saving = false // 새 화/페이지로 바뀌면(SPA 포함) 복원이 끝나기 전엔 저장하지 않음
+        if (resumeAuto) { resumeAuto = false; handler.postDelayed({ applyAuto(true) }, nextWait * 100L) } // 자동으로 다음 화에 넘어왔으면 설정한 시간 뒤부터 다시 스크롤
+        if (pr != null) {
+            val (name, ep) = pr
+            val l = loadSeries()
+            val sr = l.firstOrNull { it.key == norm(name) } ?: Series(name, norm(name), ep, ep, mutableSetOf(), "", 0L).also { l.add(it) }
+            parentUrl(web.url)?.let { sr.base = it }
+            sr.name = name; sr.last = ep; sr.max = maxOf(sr.max, ep); sr.eps.add(ep); sr.url = web.url ?: sr.url; sr.time = System.currentTimeMillis()
+            saveSeries(l)
+        }
+        else showSeriesNotice(key)
+        restorePos(key)
+    }
+
+    private class Pos(val key: String, val y: Int, val ratio: Float, val exp: Boolean, val two: Boolean, val sc: Int)
+    private fun loadPos(): MutableList<Pos> = try { loadPosRaw() } catch (_: Exception) { mutableListOf() }
+    private fun loadPosRaw(): MutableList<Pos> {
+        val a = JSONArray(prefs.getString("pos", "[]"))
+        return MutableList(a.length()) { val o = a.getJSONObject(it); Pos(o.getString("k"), o.getInt("y"), o.getDouble("r").toFloat(), o.getBoolean("e"), o.optBoolean("t", false), o.optInt("s", 100)) }
+    }
+    private val posExec = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r).apply { priority = Thread.MIN_PRIORITY; isDaemon = true } }
+    private val posLock = Any()
+    private fun savePosNow(sync: Boolean = false) {
+        val k = curKey ?: return
+        if (!saving || web.scrollY <= 0) return
+        // 화면 값은 UI 스레드에서 읽고, 목록 갱신/JSON 변환/저장은 백그라운드에서 처리(스크롤 중 끊김 방지)
+        val y = web.scrollY; val h = (web.contentHeight * density).coerceAtLeast(1f)
+        val ex = expanded; val tw = two; val sc = imgScale
+        val job = Runnable {
+            synchronized(posLock) {
+                val l = loadPos(); l.removeAll { it.key == k }
+                l.add(Pos(k, y, y / h, ex, tw, sc))
+                while (l.size > 3000) l.removeAt(0) // 읽던 위치: 최근 3000개 화/페이지
+                val a = JSONArray(); l.forEach { a.put(JSONObject().put("k", it.key).put("y", it.y).put("r", it.ratio.toDouble()).put("e", it.exp).put("t", it.two).put("s", it.sc)) }
+                prefs.edit().putString("pos", a.toString()).apply()
+            }
+        }
+        if (sync) job.run() else posExec.execute(job)
+    }
+    private fun restorePos(key: String) {
+        val p = loadPos().firstOrNull { it.key == key }
+        if (p == null || p.y < 50) { saving = true; return }
+        var tries = 0; var lastH = -1; var stable = 0
+        val sameLayout = p.exp == expanded && p.two == two && p.sc == imgScale // 레이아웃이 같을 때만 픽셀 위치, 다르면 비율로 복원
+        val r = object : Runnable {
+            fun step() {
+                val h = (web.contentHeight * density).toInt()
+                stable = if (h == lastH) stable + 1 else 0; lastH = h
+                val target = if (sameLayout) p.y else (p.ratio * h).toInt()
+                val ready = h >= target + web.height * 0.5 && (sameLayout || stable >= 3)
+                if (ready || ++tries > 30) {
+                    if (ready) web.scrollTo(0, target)
+                    saving = true
+                    return
+                }
+                handler.postDelayed(this, 400)
+            }
+            override fun run() {
+                if (curKey != key) return
+                if (two) { // 두쪽 보기는 스크립트가 위치 앵커 복원을 마친 뒤(__cvReady)에 복원해야 덮어써지지 않음
+                    web.evaluateJavascript("(window.__cvReady?1:0)") { v ->
+                        if (curKey == key) { if (v?.trim() == "1" || tries > 25) step() else { tries++; handler.postDelayed(this, 400) } }
+                    }
+                } else step()
+            }
+        }
+        handler.postDelayed(r, 400)
+    }
+
+    // ---- 목록 시트(기록/북마크): 행 높이를 알 수 있어 내용 높이만큼(최대 78%) 열림 ----
+    private fun sheetWidth() = if (rootW > 0) rootW else resources.displayMetrics.widthPixels
+    private fun rootHeight() = findViewById<View>(R.id.root).height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+    private fun listSheetHeight(rows: Int, rowDp: Int): Int = minOf((rootHeight() * 0.78f).toInt(), maxOf(dp(260), dp(86) + rows * dp(rowDp) + dp(12)))
+
+    /** 목록 행: 제목 · 보조 글 · (선택) 진행 막대 · 삭제(한 번 누르면 '삭제' 확인으로 바뀌고, 다시 누르면 삭제) */
+    private class RowHolder(val title: TextView, val sub: TextView, val track: LinearLayout, val fill: View, val rest: View, val cell: FrameLayout, val delIcon: ImageView, val confirm: TextView)
+    private fun newListRow(withProgress: Boolean): LinearLayout {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), dp(12), 0, dp(12)); setBackgroundResource(R.drawable.bg_row) }
+        val colm = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val title = TextView(this).apply { textSize = 16f; setTextColor(col(R.color.txt)); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        val sub = TextView(this).apply { textSize = 13f; setTextColor(col(R.color.txt2)); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+        colm.addView(title); colm.addView(sub, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        val track = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; weightSum = 1000f; visibility = if (withProgress) View.VISIBLE else View.GONE
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 2 * density; setColor(col(R.color.surface3)) } }
+        val fill = View(this).apply { background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 2 * density; setColor(col(R.color.accent)) } }
+        val rest = View(this)
+        track.addView(fill, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f)); track.addView(rest, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1000f))
+        colm.addView(track, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(8) })
+        row.addView(colm, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val cell = FrameLayout(this)
+        val del = ImageView(this).apply { setImageResource(R.drawable.ic_delete); imageTintList = android.content.res.ColorStateList.valueOf(col(R.color.txt3)); setPadding(dp(10), dp(10), dp(10), dp(10)); setBackgroundResource(R.drawable.bg_icon_btn); contentDescription = "삭제" }
+        val confirm = TextView(this).apply { text = "삭제"; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(col(R.color.danger)); gravity = Gravity.CENTER; setBackgroundResource(R.drawable.bg_danger_chip); setPadding(dp(14), 0, dp(14), 0); visibility = View.GONE }
+        cell.addView(del, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER)); cell.addView(confirm, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36), Gravity.CENTER))
+        row.addView(cell, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply { marginStart = dp(4) })
+        row.tag = RowHolder(title, sub, track, fill, rest, cell, del, confirm)
+        return row
+    }
+    private fun bindRowDelete(h: RowHolder, armed: Boolean, onTap: () -> Unit) {
+        h.delIcon.visibility = if (armed) View.GONE else View.VISIBLE
+        h.confirm.visibility = if (armed) View.VISIBLE else View.GONE
+        val tap = View.OnClickListener { onTap() }
+        h.delIcon.setOnClickListener(tap); h.confirm.setOnClickListener(tap)
+    }
+    private fun newSheetList(): ListView = ListView(this).apply {
+        divider = android.graphics.drawable.ColorDrawable(col(R.color.outline)); dividerHeight = 1
+        setSelector(android.R.color.transparent); overScrollMode = View.OVER_SCROLL_NEVER; isVerticalScrollBarEnabled = false
+        setPadding(dp(16), 0, dp(10), dp(12)); clipToPadding = false; setFooterDividersEnabled(false)
+    }
+
+    private fun showHistory() {
+        val l = loadSeries().sortedByDescending { it.time }.toMutableList()
+        val fmt = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.KOREA)
+        val ui = createSheet("기록", if (l.isEmpty()) null else "${l.size}개", sheetWidth(), listSheetHeight(l.size, 78))
+        val dlg = ui.dialog
+        fun empty() = ui.root.addView(emptyState(R.drawable.ic_history, "기록 없음"), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        if (l.isEmpty()) { empty(); dlg.show(); return }
+        var armed: String? = null
+        val list = newSheetList()
+        val ad = object : BaseAdapter() {
+            override fun getCount() = l.size
+            override fun getItem(i: Int) = l[i]
+            override fun getItemId(i: Int) = i.toLong()
+            override fun getView(i: Int, cv: View?, p: ViewGroup): View {
+                val s = l[i]
+                val row = (cv as? LinearLayout) ?: newListRow(true)
+                val h = row.tag as RowHolder
+                h.title.text = s.name
+                h.sub.text = "${s.last}화까지 · 최대 ${s.max}화 · ${fmt.format(java.util.Date(s.time))}"
+                val r = if (s.max > 0) (s.last.toFloat() / s.max).coerceIn(0f, 1f) else 0f
+                (h.fill.layoutParams as LinearLayout.LayoutParams).weight = r * 1000f
+                (h.rest.layoutParams as LinearLayout.LayoutParams).weight = 1000f - r * 1000f
+                h.track.requestLayout()
+                bindRowDelete(h, armed == s.key) {
+                    if (armed == s.key) {
+                        val all = loadSeries(); all.removeAll { it.key == s.key }; saveSeries(all)
+                        l.remove(s); armed = null; notifyDataSetChanged()
+                        ui.subView.text = if (l.isEmpty()) "" else "${l.size}개"; ui.subView.visibility = if (l.isEmpty()) View.GONE else View.VISIBLE
+                        if (l.isEmpty()) { ui.root.removeView(list); empty() }
+                    } else {
+                        armed = s.key; notifyDataSetChanged()
+                        handler2.postDelayed({ if (armed == s.key) { armed = null; notifyDataSetChanged() } }, 3000)
+                    }
+                }
+                return row
+            }
+        }
+        list.adapter = ad
+        list.setOnItemClickListener { _, _, i, _ ->
+            if (armed != null) { armed = null; ad.notifyDataSetChanged(); return@setOnItemClickListener } // 삭제 확인 중에 다른 곳을 누르면 확인만 해제
+            if (l[i].url.isNotEmpty()) { dlg.dismiss(); go(l[i].url) } else Toast.makeText(this, "저장된 주소 없음", Toast.LENGTH_SHORT).show()
+        }
+        ui.root.addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        dlg.show()
+    }
+
+    // ---- 북마크 ----
+    private fun loadBookmarks(): MutableList<Pair<String, String>> = try { loadBookmarksRaw() } catch (_: Exception) { mutableListOf() }
+    private fun loadBookmarksRaw(): MutableList<Pair<String, String>> {
+        val a = JSONArray(prefs.getString("bookmarks", "[]"))
+        return MutableList(a.length()) { a.getJSONObject(it).let { o -> o.getString("t") to o.getString("u") } }
+    }
+    private fun saveBookmarks(l: List<Pair<String, String>>) {
+        val a = JSONArray()
+        l.forEach { a.put(JSONObject().put("t", it.first).put("u", it.second)) }
+        prefs.edit().putString("bookmarks", a.toString()).apply()
+    }
+    private fun showBookmarks() {
+        val list = loadBookmarks()
+        val addBtn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), 0, dp(16), 0)
+            setBackgroundResource(R.drawable.bg_btn_container); isClickable = true; isFocusable = true
+            addView(ImageView(context).apply { setImageResource(R.drawable.ic_add); imageTintList = android.content.res.ColorStateList.valueOf(col(R.color.accent)) }, LinearLayout.LayoutParams(dp(20), dp(20)))
+            addView(TextView(context).apply { text = "현재 페이지"; textSize = 14f; setTypeface(null, Typeface.BOLD); setTextColor(col(R.color.accent)) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(6) })
+        }
+        val ui = createSheet("북마크", null, sheetWidth(), listSheetHeight(maxOf(list.size, 3), 66), addBtn)
+        // 헤더 오른쪽 '현재 페이지' 버튼 높이를 44dp 로 맞춤
+        (addBtn.layoutParams as LinearLayout.LayoutParams).height = dp(44)
+        val dlg = ui.dialog
+        var armed: Int? = null
+        val listView = newSheetList()
+        val emptyView = emptyState(R.drawable.ic_bookmark, "북마크 없음")
+        fun refreshEmpty() { emptyView.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE; listView.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE }
+        val ad = object : BaseAdapter() {
+            override fun getCount() = list.size
+            override fun getItem(i: Int) = list[i]
+            override fun getItemId(i: Int) = i.toLong()
+            override fun getView(i: Int, cv: View?, p: ViewGroup): View {
+                val b = list[i]
+                val row = (cv as? LinearLayout) ?: newListRow(false)
+                val h = row.tag as RowHolder
+                h.title.text = b.first
+                h.sub.text = try { android.net.Uri.parse(b.second).host ?: b.second } catch (_: Exception) { b.second }
+                bindRowDelete(h, armed == i) {
+                    if (armed == i) { list.removeAt(i); saveBookmarks(list); armed = null; notifyDataSetChanged(); refreshEmpty() }
+                    else { armed = i; notifyDataSetChanged(); handler2.postDelayed({ if (armed == i) { armed = null; notifyDataSetChanged() } }, 3000) }
+                }
+                return row
+            }
+        }
+        listView.adapter = ad
+        listView.setOnItemClickListener { _, _, i, _ ->
+            if (armed != null) { armed = null; ad.notifyDataSetChanged(); return@setOnItemClickListener }
+            dlg.dismiss(); go(list[i].second)
+        }
+        addBtn.setOnClickListener {
+            val u = web.url ?: return@setOnClickListener
+            val t = web.title?.takeIf { it.isNotBlank() } ?: u
+            val parsed = parseTitle(t)
+            val label = parsed?.let { (n, e) -> "$n ${e}화" } ?: t // 예: "웹툰명 12화"
+            // 같은 웹툰(이름 동일)이면 덮어쓰기. 주소가 바뀌어도 이름으로 식별
+            val key = parsed?.let { norm(it.first) }
+            val idx = list.indexOfFirst { b -> b.second == u || (key != null && parseTitle(b.first)?.let { norm(it.first) } == key) }
+            val at = if (idx >= 0) { list[idx] = label to u; Toast.makeText(this, "덮어씀 · $label", Toast.LENGTH_SHORT).show(); idx }
+                     else { list.add(label to u); Toast.makeText(this, "추가 · $label", Toast.LENGTH_SHORT).show(); list.size - 1 }
+            saveBookmarks(list); armed = null; ad.notifyDataSetChanged(); refreshEmpty(); listView.setSelection(at)
+        }
+        ui.root.addView(listView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        ui.root.addView(emptyView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        refreshEmpty()
+        dlg.show()
+    }
+
+    // ---- 설정 ----
+    private fun showSettings() {
+        var needInject = false; var needReload = false
+        var live = true // 시트가 열려 있는 동안만 상태 줄 갱신
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }
+        val ui = createSheet("설정", "v$ver", sheetWidth(), (rootHeight() * 0.84f).toInt())
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, dp(16), dp(8)) }
+        var cur: LinearLayout = box // 지금 항목을 넣을 곳
+        val MATCH = ViewGroup.LayoutParams.MATCH_PARENT; val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+        fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun tint(c: Int) = android.content.res.ColorStateList.valueOf(c)
+        /** 제목을 누르면 펼쳐지는 그룹 */
+        fun group(t: String, icon: Int, open: Boolean = false, body: () -> Unit) {
+            val c = column().apply { visibility = if (open) View.VISIBLE else View.GONE }
+            val chev = ImageView(this).apply { setImageResource(R.drawable.ic_chevron); imageTintList = tint(col(R.color.txt3)); rotation = if (open) 180f else 0f }
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), 0); minimumHeight = dp(56)
+                isClickable = true; isFocusable = true; setBackgroundResource(R.drawable.bg_row)
+                addView(ImageView(context).apply { setImageResource(icon); imageTintList = tint(col(R.color.accent)) }, LinearLayout.LayoutParams(dp(24), dp(24)))
+                addView(TextView(context).apply { text = t; textSize = 16f; setTypeface(null, Typeface.BOLD); setTextColor(col(R.color.txt)) }, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(14) })
+                addView(chev, LinearLayout.LayoutParams(dp(24), dp(24)))
+                setOnClickListener {
+                    val show = c.visibility != View.VISIBLE; c.visibility = if (show) View.VISIBLE else View.GONE
+                    chev.animate().rotation(if (show) 180f else 0f).setDuration(180).start()
+                }
+            }
+            box.addView(View(this).apply { setBackgroundResource(R.drawable.bg_divider) }, LinearLayout.LayoutParams(MATCH, 1))
+            box.addView(head, LinearLayout.LayoutParams(MATCH, WRAP)); box.addView(c)
+            cur = c; body(); cur = box
+        }
+        /** 상위 스위치가 켜졌을 때만 보이는 하위 묶음(왼쪽 세로선으로 들여쓰기) */
+        fun sub(show: Boolean, body: () -> Unit): LinearLayout {
+            val inner = column()
+            val outer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(14), 0, 0, 0); visibility = if (show) View.VISIBLE else View.GONE }
+            outer.addView(View(this).apply { setBackgroundResource(R.drawable.bg_sub_line) }, LinearLayout.LayoutParams(dp(2), MATCH).apply { topMargin = dp(6); bottomMargin = dp(6) })
+            outer.addView(inner, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
+            val prev = cur; prev.addView(outer); cur = inner; body(); cur = prev
+            return outer
+        }
+        fun sw(t: String, v: Boolean, f: (Boolean) -> Unit) {
+            val s = Switch(this).apply {
+                setThumbDrawable(getDrawable(R.drawable.switch_thumb)); setTrackDrawable(getDrawable(R.drawable.switch_track)); showText = false
+                isChecked = v; setOnCheckedChangeListener { _, c -> f(c) }
+            }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(52); setPadding(dp(6), 0, dp(2), 0); isClickable = true; isFocusable = true; setBackgroundResource(R.drawable.bg_row); setOnClickListener { s.toggle() } }
+            row.addView(TextView(this).apply { text = t; textSize = 15f; setTextColor(col(R.color.txt)) }, LinearLayout.LayoutParams(0, WRAP, 1f))
+            row.addView(s, LinearLayout.LayoutParams(WRAP, WRAP))
+            cur.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+        fun bar(t: String, min: Int, max: Int, v: Int, fmt: (Int) -> String, f: (Int) -> Unit) {
+            val value = TextView(this).apply { text = fmt(v); textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(col(R.color.accent)); setBackgroundResource(R.drawable.bg_chip); setPadding(dp(10), dp(4), dp(10), dp(4)) }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), dp(10), dp(6), 0) }
+            row.addView(TextView(this).apply { text = t; textSize = 15f; setTextColor(col(R.color.txt)) }, LinearLayout.LayoutParams(0, WRAP, 1f)); row.addView(value)
+            cur.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+            cur.addView(SeekBar(this).apply {
+                this.max = max - min; progress = v - min
+                this.progressDrawable = getDrawable(R.drawable.seek_track); setThumb(getDrawable(R.drawable.seek_thumb))
+                splitTrack = false; setPadding(dp(16), 0, dp(16), 0)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar, p: Int, u: Boolean) { value.text = fmt(p + min); f(p + min) }
+                    override fun onStartTrackingTouch(sb: SeekBar) {}
+                    override fun onStopTrackingTouch(sb: SeekBar) {}
+                })
+            }, LinearLayout.LayoutParams(MATCH, dp(34)))
+        }
+        /** '이름 [숫자] 초' 한 줄 입력 (0.1초 단위 값) */
+        fun secs(t: String, tenths: Int, f: (Int) -> Unit) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6)) }
+            row.addView(TextView(this).apply { text = t; textSize = 15f; setTextColor(col(R.color.txt)) }, LinearLayout.LayoutParams(0, WRAP, 1f))
+            val field = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setBackgroundResource(R.drawable.bg_field_small); setPadding(dp(14), 0, dp(14), 0) }
+            field.addView(EditText(this).apply {
+                background = null; inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setText(String.format(java.util.Locale.US, "%.1f", tenths / 10f)); gravity = Gravity.END or Gravity.CENTER_VERTICAL; minWidth = dp(44); textSize = 15f; setTextColor(col(R.color.txt)); setPadding(0, 0, 0, 0)
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun afterTextChanged(e: android.text.Editable?) { e?.toString()?.toFloatOrNull()?.let { f((it * 10).toInt()) } }
+                    override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+                    override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+                })
+            }, LinearLayout.LayoutParams(WRAP, dp(40)))
+            field.addView(TextView(this).apply { text = "초"; textSize = 14f; setTextColor(col(R.color.txt2)) }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(6) })
+            row.addView(field)
+            cur.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+        }
+        /** 읽기 전용 상태 줄(시트가 열려 있는 동안 1초마다 갱신) */
+        fun note(read: () -> String) {
+            val tv = TextView(this).apply { textSize = 12.5f; setTextColor(col(R.color.txt3)); setPadding(dp(6), 0, dp(6), dp(8)); text = read() }
+            cur.addView(tv, LinearLayout.LayoutParams(MATCH, WRAP))
+            val tick = object : Runnable { override fun run() { if (!live) return; tv.text = read(); handler2.postDelayed(this, 1000) } }
+            handler2.postDelayed(tick, 1000)
+        }
+        fun btn(t: String, onClick: () -> Unit) = cur.addView(pillButton(t, R.drawable.bg_btn_tonal, col(R.color.txt), 44, 14f).apply { setOnClickListener { onClick() } },
+            LinearLayout.LayoutParams(MATCH, dp(44)).apply { topMargin = dp(8); bottomMargin = dp(8) })
+
+        group("보기", R.drawable.ic_visibility, open = true) {
+            lateinit var twoSub: LinearLayout
+            sw("두쪽", two) { val was = two; two = it; twoSub.visibility = if (it) View.VISIBLE else View.GONE; if (was && !it) needReload = true else needInject = true }
+            twoSub = sub(two) {
+                sw("오른쪽 → 왼쪽", rtl) { rtl = it; needInject = true }
+                bar("가운데 여백", 0, 60, gap, { "${it}px" }) { gap = it; needInject = true }
+            }
+            sw("펼치면 두쪽", foldAutoTwo) { foldAutoTwo = it }
+            bar(if (expanded) "이미지 너비 · 펼침" else "이미지 너비 · 접힘", 30, 100, imgScale, { "$it%" }) { imgScale = it; applyScale() }
+            sw("화면 켜짐 유지", keepOn) { keepOn = it; applyKeepOn() }
+            sw("멀미 방지", calmMode) { calmMode = it; applyCalm() }
+        }
+        group("이동", R.drawable.ic_swap_vert) {
+            if (two) bar("거리", 10, 300, pageRatio2, { "$it%" }) { pageRatio2 = it }
+            else bar("거리", 10, 300, pageRatio, { "$it%" }) { pageRatio = it }
+            bar("시간", 0, 200, smoothMs / 10, { if (it == 0) "즉시" else "${it * 10}ms" }) { smoothMs = it * 10 } // 10ms 단위
+            bar("꾹 누름 속도", 100, 5000, holdSpeed, { "${it}px/s" }) { holdSpeed = it / 50 * 50 }
+        }
+        group("자동", R.drawable.ic_play) {
+            lateinit var pageSub: LinearLayout; lateinit var flowSub: LinearLayout; lateinit var minSub: LinearLayout
+            sw("한 페이지씩", autoPageMode) { autoPageMode = it; pageSub.visibility = if (it) View.VISIBLE else View.GONE; flowSub.visibility = if (it) View.GONE else View.VISIBLE }
+            pageSub = sub(autoPageMode) {
+                secs("대기", autoWait) { autoWait = it.coerceIn(1, 3600) }
+                sw("짧게 이동하면 덜 대기", autoWaitScale) { autoWaitScale = it; minSub.visibility = if (it) View.VISIBLE else View.GONE }
+                minSub = sub(autoWaitScale) { secs("최소 대기", autoWaitMin) { autoWaitMin = it.coerceIn(0, 3600) } }
+            }
+            flowSub = sub(!autoPageMode) { bar("속도", 20, 2000, autoSpeed, { "${it}px/s" }) { autoSpeed = it / 10 * 10 } }
+            sw("끝나면 다음화", autoNext) { autoNext = it }
+            secs("다음화 후 대기", nextWait) { nextWait = it.coerceIn(0, 600) }
+        }
+        group("경계", R.drawable.ic_ruler) {
+            lateinit var snapSub: LinearLayout; lateinit var skipSub: LinearLayout
+            sw("경계에서 멈춤", snapImg) { snapImg = it; snapSub.visibility = if (it) View.VISIBLE else View.GONE; if (it) scheduleAnalysis() }
+            snapSub = sub(snapImg) {
+                bar("아래 여백", 0, 30, stopBottomPct, { "$it%" }) { stopBottomPct = it }
+                sw("다음엔 건너뜀", skipBand) { skipBand = it; skipSub.visibility = if (it) View.VISIBLE else View.GONE }
+                skipSub = sub(skipBand) { bar("위 여백", 0, 30, skipTopPct, { "$it%" }) { skipTopPct = it } }
+                bar("무시 구간", 0, 90, ignorePct, { "${it}%" }) { ignorePct = it }
+                bar("색 차이 허용", 1, 40, colorTol, { "${it}%" }) { colorTol = it; handler2.removeCallbacks(rescan); handler2.postDelayed(rescan, 700) }
+                btn("판정 영역  ${blackL}% · ${blackW}% · ${blackH}dp") { settingsDlg?.dismiss(); showRegionEditor() }
+            }
+        }
+        group("워터마크", R.drawable.ic_wm) {
+            sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.enabled = it; wm.clearCache(); needReload = true }
+            sw("인식 표시(가운데 빨간 점)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true }
+            note {
+                web.evaluateJavascript("(window.__cvWmInfo||'')") { r -> wmJsInfo = try { (org.json.JSONTokener(r ?: "").nextValue() as? String) ?: "" } catch (_: Exception) { "" } }
+                wm.engine.status() + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n" + wm.engine.diag() +
+                    (if (wm.lastFail.isNotEmpty()) "\n실패 원인: ${wm.lastFail}" else "") + (if (wmJsInfo.isNotEmpty()) "\n$wmJsInfo" else "")
+            }
+            btn("다시 찾기") { wm.engine.forget(); needReload = true }
+            btn("진단 복사") {
+                val txt = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n실패 원인: ${wm.lastFail}\n" + wm.engine.fullDiag() + wmJsInfo
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("wm", txt))
+                Toast.makeText(this, "복사됨 · 대화창에 붙여넣기", Toast.LENGTH_SHORT).show()
+            }
+            btn("진단용 원본 이미지 저장") { saveWmSamples() }
+        }
+        group("버튼", R.drawable.ic_apps) {
+            bar("크기", 32, 96, btnSize, { "${it}dp" }) { btnSize = it; applyBtnSize() }
+            bar("투명도", 20, 100, btnAlpha, { "$it%" }) { btnAlpha = it; applyBtnAlpha() }
+            btn("위치 초기화") { resetBtnPositions() }
+        }
+        group("광고", R.drawable.ic_shield) {
+            btn("광고 제거") {
+                settingsDlg?.dismiss()
+                handler2.postDelayed({ // 닫힘 리스너(변경 적용/새로고침)가 먼저 끝난 뒤 실행
+                    injectScript(); setFull(true)
+                    web.evaluateJavascript("window.__cvEx&&window.__cvEx(true)", null)
+                }, 400)
+            }
+        }
+        box.isFocusableInTouchMode = true; box.descendantFocusability = ViewGroup.FOCUS_BEFORE_DESCENDANTS; box.requestFocus() // 처음 포커스가 입력칸으로 가서 아래로 스크롤되는 것 방지
+        val sv = ScrollView(this).apply { addView(box); isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+        ui.root.addView(sv, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        ui.root.addView(pillButton("완료", R.drawable.bg_btn_container, col(R.color.accent), 50, 16f).apply { setOnClickListener { ui.dialog.dismiss() } },
+            LinearLayout.LayoutParams(MATCH, dp(50)).apply { setMargins(dp(16), dp(10), dp(16), dp(16)) })
+        val dlg = ui.dialog
+        dlg.setOnDismissListener { // 완료/바깥 터치/뒤로가기/다른 편집기로 전환 등 어떤 경로로 닫아도 변경 사항 적용
+            live = false
+            updateTwoBtn()
+            if (needReload) web.reload() else if (needInject) injectScript()
+        }
+        settingsDlg = dlg
+        dlg.show()
+    }
+
+    companion object {
+        // 페이지에 '겹쳐 올린 로고 요소'(이미지/배경 그림이 큰 이미지 위에 3장 이상 똑같이 반복)를 찾아 숨김. 이미지에 박힌 워터마크는 해당 없음(앱이 따로 처리)
+        private const val WM_RETRO_JS = """(function(){
+var W=window,D=document;if(W.__wmRetro)return;
+W.__wmRetro=function(urls){var set={},n=0,k;for(k=0;k<urls.length;k++)set[urls[k]]=1;
+ var im=D.querySelectorAll('img');for(k=0;k<im.length;k++){var i=im[k],u=i.currentSrc||i.src;
+  if(set[u]&&i.naturalWidth>=350){var s=u+(u.indexOf('?')<0?'?':'&')+'_wmr='+Date.now()+k;if(i.getAttribute('srcset')){i.removeAttribute('srcset')}i.src=s;n++}}
+ return n};
+})();"""
+        private const val WM_JS = """(function(){
+if(window.__cvWmI)return;window.__cvWmI=1;
+var W=window,D=document,runs=0;W.__cvWmN=0;W.__cvWmInfo='';
+W.__wmRetro=function(urls){var set={},n=0,k;for(k=0;k<urls.length;k++)set[urls[k]]=1;
+ var im=D.querySelectorAll('img');for(k=0;k<im.length;k++){var i=im[k],u=i.currentSrc||i.src;
+  if(set[u]&&i.naturalWidth>=350){var s=u+(u.indexOf('?')<0?'?':'&')+'_wmr='+Date.now()+k;if(i.getAttribute('srcset')){i.removeAttribute('srcset')}i.src=s;n++}}
+ return n};
+function big(i){return i.naturalWidth>=350&&i.naturalHeight>=100}
+function run(){
+ try{
+  var imgs=[].filter.call(D.images,function(i){return big(i)&&!(i.closest&&i.closest('#cv-root'))});
+  if(imgs.length<3){W.__cvWmInfo='겹침 검사: 큰 이미지 '+imgs.length+'장';return}
+  var rects=imgs.map(function(i){return i.getBoundingClientRect()});
+  var all=D.body.querySelectorAll('img,div,span,i,p,figure,picture,canvas');
+  var cand={};
+  for(var k=0;k<all.length&&k<6000;k++){
+   var e=all[k];
+   if(e.__cvwm||(e.closest&&e.closest('#cv-root,.cv-keep')))continue;
+   if(e.tagName==='IMG'&&big(e))continue;
+   var r=e.getBoundingClientRect(),w=r.width,h=r.height;
+   if(w<40||h<40||w>W.innerWidth*0.75)continue;
+   var cx=r.left+w/2,cy=r.top+h/2,over=-1;
+   for(var j=0;j<rects.length;j++){var q=rects[j];if(cx>=q.left&&cx<=q.right&&cy>=q.top&&cy<=q.bottom){over=j;break}}
+   if(over<0)continue;
+   var u='';
+   if(e.tagName==='IMG')u=e.currentSrc||e.src||'';
+   else{var b=getComputedStyle(e).backgroundImage;if(b&&b!=='none')u=b}
+   if(!u)continue;
+   var key=u+'|'+Math.round(w/8)+'x'+Math.round(h/8);
+   (cand[key]=cand[key]||[]).push([e,over])
+  }
+  var best='',bn=0,hide=0;
+  for(var key in cand){var g=cand[key],ds={};g.forEach(function(x){ds[x[1]]=1});var dn=Object.keys(ds).length;
+   if(dn>bn){bn=dn;best=key.split('|')[0]}
+   if(dn>=3){g.forEach(function(x){x[0].style.setProperty('visibility','hidden','important');x[0].__cvwm=1;hide++})}}
+  var fx=0,ft='';
+  for(var k2=0;k2<all.length&&k2<6000;k2++){
+   var e2=all[k2];
+   if(e2.__cvwm||(e2.closest&&e2.closest('#cv-root,.cv-keep,a,button')))continue;
+   if(e2.tagName==='IMG'&&big(e2))continue;
+   var r2=e2.getBoundingClientRect(),w2=r2.width,h2=r2.height,cy2=r2.top+h2/2;
+   if(w2<40||h2<40||w2>W.innerWidth*0.75||cy2<W.innerHeight*0.15||cy2>W.innerHeight*0.85)continue;
+   var u2='';
+   if(e2.tagName==='IMG')u2=e2.currentSrc||e2.src||'';
+   else{var b2=getComputedStyle(e2).backgroundImage;if(b2&&b2!=='none')u2=b2}
+   if(!u2)continue;
+   var fixed=false,p=e2;for(var d=0;d<7&&p&&p!==D.body;d++,p=p.parentElement){if(getComputedStyle(p).position==='fixed'){fixed=true;break}}
+   if(!fixed)continue;
+   e2.style.setProperty('visibility','hidden','important');e2.__cvwm=1;fx++;ft=u2.slice(-24)
+  }
+  hide+=fx;
+  W.__cvWmN+=hide;
+  W.__cvWmInfo='겹침 숨김 '+W.__cvWmN+'개'+(bn?(' · 최다 '+bn+'장 '+best.slice(-28)):'')
+ }catch(e){W.__cvWmInfo='겹침 검사 오류 '+e.message}
+}
+W.__cvWmRun=run;
+var t=setInterval(function(){run();if(++runs>=30)clearInterval(t)},2000);run();
+})()"""
+        // 두쪽 보기: 연속 세로 스트립을 좌/우 두 패널로 표시(왼쪽=현재 위치, 오른쪽=한 화면 아래).
+        // 문서 스크롤(native)에 맞춰 두 스트립을 translate. 광고 제외 규칙은 사이트(localStorage)별 저장.
+        private const val SCRIPT = """(function(){
+var o=window.__cvOpts=window.__cvOpts||{};o.two=__TWO__;o.rtl=__RTL__;o.gap=__GAP__;
+if(window.__cvTimer){window.__cvTick();return}
+var bx=null,anchor=null,anchorTaken=0,anchorDone=0,anchorTries=0,cnt=0,root=null,strips=[],spacer=null,bar=null;
+function key(u){return (u||'').split('?')[0]}
+function rules(){try{var r=JSON.parse(localStorage.getItem('cv_ex')||'{}');r.urls=r.urls||[];r.idx=r.idx||[];r.sels=r.sels||[];return r}catch(e){return {urls:[],idx:[],sels:[]}}}
+function saveRules(r){try{localStorage.setItem('cv_ex',JSON.stringify(r))}catch(e){}}
+function big(i){var src=i.currentSrc||i.src;
+ if(i.__cvb!==undefined&&i.__cvbs===src)return i.__cvb; // 같은 주소의 판정은 재사용(레이아웃 계산 절약). 자리표시 이미지→실제 이미지로 바뀌면 다시 판정
+ var w=i.naturalWidth,h=i.naturalHeight;
+ if(!w||!h)return false;
+ i.__cvbs=src;
+ if(w<350||h<100||w/h>8)return(i.__cvb=false);
+ var r=i.getBoundingClientRect();
+ if(r.width==0){i.__cvbs=null;return true} // 숨김/미배치 상태는 캐시하지 않음
+ return(i.__cvb=(r.width>=window.innerWidth*0.6));}
+function takeAnchor(bigs){anchorTaken=1;
+ for(var n=0;n<bigs.length;n++){var r=bigs[n].getBoundingClientRect();
+  if(r.bottom>1&&r.height>0){anchor={cvi:bigs[n].__cvi,frac:r.top<0?(-r.top/r.height):0};return}}
+ var h=document.documentElement.scrollHeight;if(h>0)anchor={ratio:window.scrollY/h}}
+function restoreAnchor(){
+ if(!anchor||anchorDone){window.__cvReady=1;return}
+ anchorTries++;var y=null;
+ if(anchor.cvi!==undefined){var cl=null,ready=true,k=strips[0].children;
+  for(var n=0;n<k.length;n++){if(!k[n].complete||!k[n].naturalHeight)ready=false;if(k[n].__cvi===anchor.cvi){cl=k[n];break}}
+  if(cl&&ready)y=cl.offsetTop+anchor.frac*cl.offsetHeight;}
+ else if(strips[0].offsetHeight>window.innerHeight)y=anchor.ratio*strips[0].offsetHeight;
+ if(y!==null||anchorTries>40){if(y!==null){window.scrollTo(0,y);upd()}anchorDone=1;window.__cvReady=1}}
+function lazySrc(i){var n=['data-src','data-original','data-lazy-src','data-lazy','data-url','data-origin','data-echo','lazy-src','data-actualsrc'];
+ for(var k=0;k<n.length;k++){var v=i.getAttribute(n[k]);if(v&&/^(https?:)?\/\/|^\/|\.(jpe?g|png|webp|gif)/i.test(v))return v}
+ return null}
+var swept=0;
+function needSweep(imgs){return imgs.some(function(i){return !i.naturalWidth&&!lazySrc(i)&&i.loading!='lazy'&&(!i.getAttribute('src')||i.getBoundingClientRect().height>=100)})} // 주소 속성도 없고 스크롤해야만 뜨는 이미지가 있을 때만 훑기 필요
+function sweep(){swept=1;var st=box('cv-diag','bottom:12px');st.textContent='두쪽 보기: 이미지 불러오는 중...';
+ var y=0,n=0;(function step(){var H=window.innerHeight;window.scrollTo(0,y);y+=H*0.8;n++;
+  if(y<document.documentElement.scrollHeight&&n<30)setTimeout(step,120);
+  else setTimeout(function(){window.scrollTo(0,0);st.remove();swept=2;tick()},500)})();}
+function collapse(e){e.style.display='none';var hs=[e];e.__cvhs=hs;var p=e.parentElement;
+ while(p&&p!==document.body&&p!==document.documentElement&&!p.closest('.cv-keep')){
+  var vis=[].some.call(p.children,function(c){if(c===e||c.style.display==='none'||getComputedStyle(c).display==='none')return false;
+   return c.offsetHeight>0||/^(IMG|IFRAME|CANVAS|VIDEO)$/.test(c.tagName)||!!c.querySelector('img,iframe,canvas,video')});
+  var txt=[].some.call(p.childNodes,function(n){return n.nodeType==3&&n.textContent.trim()});
+  if(vis||txt)break;p.style.display='none';hs.push(p);p=p.parentElement}}
+function mk(t,id,c){var d=document.createElement(t);if(id)d.id=id;if(c)d.className=c;return d}
+function build(){
+ var st=mk('style','cv-style');
+ st.textContent='body>*:not(#cv-root):not(#cv-spacer):not(.cv-keep){display:none!important}html,body{margin:0!important;padding:0!important;background:#000!important;overflow:visible!important;height:auto!important;position:static!important;transform:none!important}#cv-root{position:fixed;top:0;height:100vh;z-index:2147483000;display:flex;background:#000;overflow:hidden}.cv-pane{flex:1;min-width:0;height:100%;overflow:hidden;position:relative}.cv-strip{width:100%;will-change:transform}.cv-strip img{width:100%;height:auto;display:block;max-width:none;margin:0}';
+ document.head.appendChild(st);
+ root=mk('div','cv-root');root.style.pointerEvents='none';
+ for(var k=0;k<2;k++){var p=mk('div',null,'cv-pane'),s=mk('div',null,'cv-strip');p.appendChild(s);root.appendChild(p);strips.push(s);}
+ spacer=mk('div','cv-spacer');
+ document.body.appendChild(root);document.body.appendChild(spacer);
+}
+function add(i){var src=i.currentSrc||i.src;
+ strips.forEach(function(s){var a=new Image();a.src=src;a.__cvi=i.__cvi;a.__cvsrc=src;
+  var ref=null,k=s.children;for(var n=0;n<k.length;n++){if(k[n].__cvi>a.__cvi){ref=k[n];break}}
+  s.insertBefore(a,ref);});}
+function upd(full){if(!root)return;
+ var H=window.innerHeight,y=window.scrollY;
+ root.style.flexDirection=o.rtl?'row-reverse':'row';root.style.gap=o.gap+'px';
+ root.style.width='100%';root.style.left='0';
+ strips[0].style.transform='translate3d(0,'+(-y)+'px,0)';
+ strips[1].style.transform='translate3d(0,'+(-(y+H))+'px,0)';
+ if(full!==false)spacer.style.height=Math.max(strips[0].offsetHeight,H)+'px';} // 스크롤 중에는 offsetHeight(강제 레이아웃) 읽지 않음
+function rebuild(){strips.forEach(function(s){s.innerHTML=''});
+ [].forEach.call(document.images,function(i){i.__cva=0});tick();}
+var lastScroll=0,lastTick=0,t0=Date.now();
+function tick(){var nw=Date.now();if(root&&nw-lastScroll<300&&nw-lastTick<1500)return; // 스크롤 중에는 건너뛰되 1.5초에 한 번은 반드시 실행
+ lastTick=nw;
+ try{tick0()}catch(e){window.__cvErr=String(e&&e.message||e);if(!window.__cvErrShown){window.__cvErrShown=1;var d=box('cv-err','bottom:12px;border-color:#FF7A87');d.textContent='두쪽 보기 오류: '+window.__cvErr;setTimeout(function(){d.remove()},8000)}}}
+function tick0(){
+ var imgs=[].slice.call(document.images).filter(function(i){return !i.closest('#cv-root')});
+ imgs.forEach(function(i){
+  if(i.__cvi===undefined)i.__cvi=cnt++;
+  var d=lazySrc(i);
+  if(d&&Date.now()-t0>(o.two?1200:4000)&&!i.__cvl&&(!i.src||i.src.indexOf('data:')==0||i.naturalWidth<2)&& // 사이트가 세션/토큰을 준비하기 전에 이미지를 강제로 요청하지 않도록 4초 대기
+   (o.two||i.getBoundingClientRect().top<window.innerHeight*2)){
+   i.__cvl=1;i.loading='eager';i.src=d;}
+  else if(o.two&&i.loading=='lazy')i.loading='eager';
+ });
+ var r=rules();
+ if(!o.two){imgs.forEach(function(i){if(r.urls.indexOf(key(i.currentSrc||i.src))>=0&&!i.__cvhid){collapse(i);i.__cvhid=1}});
+  r.sels.forEach(function(sl){try{[].forEach.call(document.querySelectorAll(sl),function(e){if(e.style.display!=='none')collapse(e)})}catch(x){}})}
+ var bigs=imgs.filter(big).sort(function(a,b){return a.__cvi-b.__cvi});
+ bigs.forEach(function(i,k){i.__cvk=k;
+  var ex=r.urls.indexOf(key(i.currentSrc||i.src))>=0||r.idx.indexOf(k)>=0;i.__cvx=ex;
+  if(o.two)return;
+  if(ex){if(!i.__cvhid){collapse(i);i.__cvhid=1}return}
+  if(i.__cvhid){(i.__cvhs||[i]).forEach(function(el){el.style.display=''});i.__cvhid=0}
+ });
+ if(!o.two)return;
+ if(root){var live={};imgs.forEach(function(i){live[i.__cvi]=1});strips.forEach(function(s){[].slice.call(s.children).forEach(function(c){if(!live[c.__cvi])c.remove()})})}
+ if(!anchorTaken)takeAnchor(bigs);
+ if(!root){if(swept==0&&needSweep(imgs)){sweep();return}if(swept==1)return;if(!bigs.length)return;build()}
+ bigs.forEach(function(i){if(i.__cva||i.__cvx)return;i.__cva=1;add(i);});
+ upd();restoreAnchor();
+}
+window.__cvImgs=function(){var out=[],y=window.scrollY;
+ if(root){var k=strips[0].children;for(var n=0;n<k.length;n++)out.push({s:k[n].__cvsrc||k[n].src,t:k[n].offsetTop,h:k[n].offsetHeight})}
+ else{[].slice.call(document.images).filter(function(i){return !i.closest('#cv-root')&&big(i)}).forEach(function(i){var q=i.getBoundingClientRect();if(q.height>0)out.push({s:i.currentSrc||i.src,t:q.top+y,h:q.height})})
+  out.sort(function(a,b){return a.t-b.t})}
+ var blk=[];if(!root){[].slice.call(document.querySelectorAll('img,iframe,canvas,video')).forEach(function(e){if(e.closest('#cv-root')||e.closest('.cv-keep')||(e.tagName=='IMG'&&big(e)))return;var q=e.getBoundingClientRect();if(q.height>=10&&q.width>0)blk.push({t:q.top+y,h:q.height})})} // 큰 이미지가 아닌 보이는 요소(광고·작은 조각·미로딩 이미지): 이미지 사이 빈틈 판정에서 '내용 있음'으로 취급
+ return JSON.stringify({imgs:out,blk:blk})};
+window.__cvTick=tick;
+window.__cvNext=function(click){
+ var c=document.querySelector('a[rel=next][href]');
+ if(!c){var re=/다음\s*(화|회|편|话|話)|next\s*(ep|episode|chapter)|^\s*(다음|next)\s*${'$'}/i;
+  var as=[].slice.call(document.querySelectorAll('a,button'));
+  for(var n=0;n<as.length;n++){var a=as[n];if(a.closest('.cv-keep'))continue;
+   var t=(a.innerText||a.title||a.getAttribute('aria-label')||'').trim();
+   if(t.length>0&&t.length<=14&&re.test(t)){c=a;break}}}
+ if(!c)return '';
+ if(click)c.click();return c.href||'1';};
+// ---- 광고 제거 모드: 크기 조절 가능한 박스를 광고에 맞춰 [제거] ----
+function btn(t,f,p){var b=mk('button');b.textContent=t;b.style.cssText='margin:4px;padding:0 18px;height:40px;border:0;border-radius:20px;font:600 14px Roboto,sans-serif;'+(p?'background:#8E9DFF;color:#0B0D2B':'background:#30313E;color:#ECEDF4');b.onclick=function(ev){ev.stopPropagation();f()};return b}
+function box(id,css){var d=mk('div',id,'cv-keep');d.style.cssText='position:fixed;left:10px;right:10px;z-index:2147483647;color:#ECEDF4;font:500 14px/1.45 Roboto,sans-serif;text-align:center;padding:12px;border-radius:20px;background:rgba(27,28,36,.96);border:1px solid rgba(255,255,255,.09);box-shadow:0 6px 22px rgba(0,0,0,.5);'+css;document.body.appendChild(d);return d}
+function ovl(a,b){var w=Math.min(a.right,b.right)-Math.max(a.left,b.left),h=Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top);return(w>0&&h>0)?w*h:0}
+function setRect(l,t,w,h){var W=window.innerWidth,H=window.innerHeight;w=Math.max(40,Math.min(w,W));h=Math.max(40,Math.min(h,H));
+ l=Math.max(0,Math.min(l,W-w));t=Math.max(0,Math.min(t,H-h));
+ bx.style.left=l+'px';bx.style.top=t+'px';bx.style.width=w+'px';bx.style.height=h+'px';}
+function drag(el,fn){el.addEventListener('pointerdown',function(e){e.stopPropagation();e.preventDefault();el.setPointerCapture(e.pointerId);
+ var sx=e.clientX,sy=e.clientY,r=bx.getBoundingClientRect();
+ function mv(ev){fn(ev.clientX-sx,ev.clientY-sy,r)}
+ function up(){el.removeEventListener('pointermove',mv);el.removeEventListener('pointerup',up);el.removeEventListener('pointercancel',up)}
+ el.addEventListener('pointermove',mv);el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up)})}
+function mkBox(){var W=window.innerWidth,H=window.innerHeight;
+ bx=mk('div','cv-box','cv-keep');
+ bx.style.cssText='position:fixed;z-index:2147483646;left:'+(W*0.1)+'px;top:'+(H*0.3)+'px;width:'+(W*0.8)+'px;height:'+(H*0.25)+'px;border:2px solid #8E9DFF;background:rgba(142,157,255,.16);border-radius:6px;touch-action:none;box-sizing:border-box';
+ document.body.appendChild(bx);
+ drag(bx,function(dx,dy,r){setRect(r.left+dx,r.top+dy,r.width,r.height)});
+ [['nw',0,0],['ne',1,0],['sw',0,1],['se',1,1]].forEach(function(c){
+  var h=mk('div',null,'cv-keep');
+  h.style.cssText='position:absolute;width:44px;height:44px;border-radius:50%;background:radial-gradient(circle,#fff 0,#fff 8px,#8E9DFF 8px,#8E9DFF 11px,transparent 11.5px);touch-action:none;'+(c[1]?'right':'left')+':-18px;'+(c[2]?'bottom':'top')+':-18px';
+  bx.appendChild(h);
+  drag(h,function(dx,dy,r){var l=r.left,t=r.top,w=r.width,hh=r.height;
+   if(c[1])w=r.width+dx;else{l=r.left+dx;w=r.width-dx}
+   if(c[2])hh=r.height+dy;else{t=r.top+dy;hh=r.height-dy}
+   if(w<40){if(!c[1])l=r.right-40;w=40}if(hh<40){if(!c[2])t=r.bottom-40;hh=40}
+   setRect(l,t,w,hh)})});}
+function selOf(e){var s=e.id?'#'+CSS.escape(e.id):e.tagName.toLowerCase()+(e.classList.length?'.'+[].map.call(e.classList,CSS.escape).join('.'):'');return s}
+function applyBox(mode){var b=bx.getBoundingClientRect(),r=rules(),hits=[];
+ [].slice.call(document.images).forEach(function(i){var o2=i;
+  if(i.closest('#cv-root')){o2=null;[].forEach.call(document.images,function(x){if(x.__cvi===i.__cvi&&!x.closest('#cv-root'))o2=x});if(o2)o2.__cvsrc=i.__cvsrc}
+  if(!o2||o2.closest('.cv-keep'))return;
+  var q=i.getBoundingClientRect(),a=q.width*q.height;if(a<=0)return;
+  if(ovl(b,q)/a>=0.6&&hits.indexOf(o2)<0)hits.push(o2)});
+ var n=0;
+ hits.forEach(function(o2){var src=key(o2.__cvsrc||o2.currentSrc||o2.src);
+  if(mode=='pos'&&o2.__cvk!==undefined){if(r.idx.indexOf(o2.__cvk)<0)r.idx.push(o2.__cvk)}
+  else if(r.urls.indexOf(src)<0)r.urls.push(src);n++});
+ if(!n){var cx=b.left+b.width/2,cy=b.top+b.height/2,pst=document.createElement('style'),els,e=null;pst.textContent='*{pointer-events:auto!important}';document.head.appendChild(pst);els=document.elementsFromPoint(cx,cy);pst.remove();
+  for(var k=0;k<els.length;k++){var x=els[k];if(x===document.documentElement||x===document.body||x.closest('.cv-keep')||x.closest('#cv-root'))continue;e=x;break}
+  if(e){while(e.parentElement&&e.parentElement!==document.body){var pr=e.parentElement.getBoundingClientRect();
+    if(pr.left>=b.left-12&&pr.right<=b.right+12&&pr.top>=b.top-12&&pr.bottom<=b.bottom+12)e=e.parentElement;else break}
+   var sl=selOf(e);if(document.querySelectorAll(sl).length<=5){r.sels=r.sels||[];if(r.sels.indexOf(sl)<0)r.sels.push(sl);collapse(e);n=1}}}
+ saveRules(r);rebuild();return n}
+window.__cvEx=function(on){if(bar){bar.remove();bar=null}if(bx){bx.remove();bx=null}
+ if(on){mkBox();bar=box('cv-ui','top:36px');
+  var msg=document.createElement('div');msg.textContent='광고에 박스를 맞추기';msg.style.cssText='color:#A3A5B8;margin:0 0 6px';bar.appendChild(msg);
+  var res=document.createElement('div');res.style.cssText='color:#8E9DFF;margin-top:4px';
+  bar.appendChild(btn('이 화',function(){res.textContent=applyBox('url')+'개 제거'},1));
+  bar.appendChild(btn('모든 화',function(){res.textContent=applyBox('pos')+'개 제거'},1));
+  bar.appendChild(btn('종료',function(){window.__cvEx(false)}));
+  bar.appendChild(btn('초기화',function(){saveRules({urls:[],idx:[],sels:[]});location.reload()}));
+  bar.appendChild(res);}};
+window.addEventListener('scroll',function(){lastScroll=Date.now();upd(false)},{passive:true});window.addEventListener('resize',function(){upd()});
+window.__cvTimer=setInterval(tick,800);tick();
+})()"""
+    }
+}
