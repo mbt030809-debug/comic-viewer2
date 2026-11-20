@@ -126,6 +126,7 @@ class MainActivity : Activity() {
         BandAnalyzer.userAgent = web.settings.userAgentString // 분석용 이미지 요청도 페이지와 같은 UA 사용
         web.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(v: WebView, p: Int) { showLoad(p) }
+            override fun onReceivedTitle(v: WebView, t: String?) { titleFresh = true } // 새 문서의 제목이 들어옴
         }
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? = try { wm.intercept(r) } catch (_: Throwable) { null } // 실패하면 웹뷰가 원래대로 받음
@@ -134,11 +135,13 @@ class MainActivity : Activity() {
                 handler.removeCallbacksAndMessages(null)
                 snapInfo = null
                 analyzer.cancelPending() // 이전 페이지 이미지 분석이 새 페이지 로딩과 대역폭/연결을 다투지 않게 중단
-                curKey = null; saving = false; titleStable = 0; atBottomShown = false; nextBtn.visibility = View.GONE
+                curKey = null; saving = false; titleStable = 0; titleFresh = false; atBottomShown = false; nextBtn.visibility = View.GONE
+                pageAnim?.cancel(); stopHold() // 이전 페이지에서 진행 중이던 이동 애니메이션·꾹 누르기 스크롤이 새 페이지를 내리지 않게
                 syncUrl(u)
             }
             override fun doUpdateVisitedHistory(v: WebView, u: String, isReload: Boolean) { syncUrl(u) } // 리다이렉트·SPA 이동 포함, 실제 현재 주소 반영
             override fun onPageFinished(v: WebView, u: String) {
+                titleFresh = true
                 syncUrl(u)
                 injectScript()
                 if (wmOn) v.evaluateJavascript(WM_JS, null) else if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
@@ -256,7 +259,7 @@ class MainActivity : Activity() {
     }
 
     // ---- 업데이트: 실행할 때 GitHub 최신 빌드 번호를 확인하고, 새 버전이면 내려받아 설치 화면을 띄움 ----
-    private val relBase = "https://github.com/mbt030809-debug/comic-viewer/releases/download/latest/"
+    private val relBase = "https://github.com/mbt030809-debug/comic-viewer2/releases/download/latest/"
     private var updateReceiver: android.content.BroadcastReceiver? = null
     private fun checkUpdate() {
         Thread {
@@ -1033,11 +1036,15 @@ class MainActivity : Activity() {
             if (lastUrl.isNotEmpty() && cleanUrl(lastUrl) != here) "이어보기" else null) { go(lastUrl) }
     }
     private var titleStable = 0
+    /** 새 페이지 로딩이 시작된 뒤 새 문서의 제목을 받았는지(예방용). 받기 전 web.title이 이전 화의 제목이면
+     *  이전 화의 키로 판정해 이전 화의 읽던 위치로 새 화를 스크롤할 수 있음. 테스트 사이트(3초 지연)에서는 재현되지 않음 */
+    private var titleFresh = true
 
     /** 현재 페이지를 식별하는 키를 정해 읽던 위치를 복원/저장. 제목에서 '웹툰명+N화'를 읽으면 그것(주소가 바뀌어도 유지), 못 읽으면 주소 */
     private fun checkTitle() {
         val url = web.url
         if (url.isNullOrEmpty() || url == "about:blank") return
+        if (!titleFresh) return
         val title = web.title ?: ""
         if (title == lastTitle) titleStable++ else { lastTitle = title; titleStable = 0 }
         var parsed = parseTitle(title)
@@ -1065,6 +1072,7 @@ class MainActivity : Activity() {
         restorePos(key)
     }
 
+    private val DONE_RATIO = 0.85f // 이 비율 이상 내려가 있었으면 '다 봄'으로 보고 다시 열 때 위치 복원 안 함
     private class Pos(val key: String, val y: Int, val ratio: Float, val exp: Boolean, val two: Boolean, val sc: Int)
     private fun loadPos(): MutableList<Pos> = try { loadPosRaw() } catch (_: Exception) { mutableListOf() }
     private fun loadPosRaw(): MutableList<Pos> {
@@ -1093,6 +1101,7 @@ class MainActivity : Activity() {
     private fun restorePos(key: String) {
         val p = loadPos().firstOrNull { it.key == key }
         if (p == null || p.y < 50) { saving = true; return }
+        if (p.ratio >= DONE_RATIO) { saving = true; return } // 끝까지 본 화/페이지는 끝으로 복원하지 않고 처음부터
         var tries = 0; var lastH = -1; var stable = 0
         val sameLayout = p.exp == expanded && p.two == two && p.sc == imgScale // 레이아웃이 같을 때만 픽셀 위치, 다르면 비율로 복원
         val r = object : Runnable {

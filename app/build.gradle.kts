@@ -9,7 +9,7 @@ android {
         applicationId = "com.example.comicviewer"
         minSdk = 24
         targetSdk = 34
-        versionCode = 124
+        versionCode = 125
         versionName = "2.01"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
