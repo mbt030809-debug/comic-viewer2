@@ -110,13 +110,6 @@ class MainActivity : Activity() {
         nextBtn = findViewById(R.id.nextBtn)
         applyKeepOn()
         initScrollBar()
-        findViewById<View>(R.id.topBar).addOnLayoutChangeListener { v, _, t, _, bottom, _, _, _, _ ->
-            // 메뉴가 표시 중이면 웹페이지 상단 여백을 메뉴 높이에 맞춤(초기 표시/높이 변화 대응)
-            if (!full && menuAnim?.isRunning != true && v.visibility == View.VISIBLE) {
-                val p2 = web.layoutParams as FrameLayout.LayoutParams
-                if (p2.topMargin != bottom - t) { p2.topMargin = bottom - t; web.layoutParams = p2 }
-            }
-        }
         web.isVerticalScrollBarEnabled = false; web.isHorizontalScrollBarEnabled = false
         web.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true
@@ -468,8 +461,6 @@ class MainActivity : Activity() {
             else if (!full && top > 0) barInset = top
             if (bottom > 0) navInset = bottom
             if (bar.paddingTop != top || bar.paddingLeft != left || bar.paddingRight != right) bar.setPadding(left, top, right, 0)
-            val lp = web.layoutParams as FrameLayout.LayoutParams
-            if (lp.bottomMargin != bottom) { lp.bottomMargin = bottom; web.layoutParams = lp }
             insets
         }
         rootV.requestApplyInsets()
@@ -499,47 +490,37 @@ class MainActivity : Activity() {
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
         }
         val h = topBar.measuredHeight.coerceAtLeast(1)
-        val lp = web.layoutParams as FrameLayout.LayoutParams
-        val from = (lp.topMargin + web.translationY).toInt() // 현재 눈에 보이는 웹페이지 상단 위치
+        // 메뉴는 웹페이지 '위에 덮여' 위에서 내려오고 위로 사라짐. 웹뷰는 항상 화면 전체 크기·같은 위치(크기도 위치도 바꾸지 않음).
+        // 웹뷰의 크기나 위치를 바꾸면 화면에 새로 드러나는 부분을 웹뷰가 한두 프레임 늦게 그려 그 사이 검게 보이기 때문.
+        // (메뉴가 보이는 동안 웹페이지 위쪽은 메뉴에, 아래쪽은 내비게이션 바에 가려짐 → visTop()/visibleH())
+        val from = topBar.translationY + h
         menuAnim?.cancel()
         topBar.visibility = View.VISIBLE
-        // 애니메이션 동안 웹뷰의 레이아웃은 항상 '큰 쪽'(위 여백 0)으로 두고 translationY 로만 움직임(레이아웃 1회):
-        //  - 숨길 때: 위로 올라가며 아래쪽은 화면 밖으로 밀려남
-        //  - 열 때: 아래로 내려오며 아래쪽은 시스템 바 영역에서 잘라냄(clipBounds) → 아래쪽에 빈(검은) 띠가 생기지 않음
-        // 열기가 끝난 뒤에만 최종 여백(메뉴 높이)을 적용(보이는 모양은 그대로)
-        lp.topMargin = 0; web.layoutParams = lp
-        web.translationY = from.toFloat()
         val target = if (v) 0f else h.toFloat()
-        menuAnim = ValueAnimator.ofFloat(from.toFloat(), target).apply {
+        menuAnim = ValueAnimator.ofFloat(from, target).apply {
             duration = if (calmMode) 0 else 300; interpolator = android.view.animation.PathInterpolator(0.33f, 0f, 0.67f, 1f) // 멀미 방지: 메뉴 전환 즉시
             addUpdateListener {
-                val ty = it.animatedValue as Float // 눈에 보이는 웹페이지 상단 위치
-                web.translationY = ty
+                val ty = it.animatedValue as Float // 메뉴 아래끝 위치
                 topBar.translationY = ty - h; topBar.alpha = (ty / h).coerceIn(0f, 1f)
-                if (!v) web.clipBounds = android.graphics.Rect(0, 0, web.width, (web.height - ty.toInt()).coerceAtLeast(1))
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 private var cancelled = false
                 override fun onAnimationCancel(a: android.animation.Animator) { cancelled = true }
-                override fun onAnimationEnd(a: android.animation.Animator) {
-                    web.clipBounds = null
-                    if (cancelled) return // 다음 setFull 이 현재 보이는 위치(위 여백 0 + translationY)에서 이어서 시작
-                    if (full) { web.translationY = 0f; topBar.visibility = View.GONE }
-                    else {
-                        val p3 = web.layoutParams as FrameLayout.LayoutParams
-                        p3.topMargin = if (topBar.height > 0) topBar.height else h
-                        web.translationY = 0f; web.layoutParams = p3
-                    }
-                }
+                override fun onAnimationEnd(a: android.animation.Animator) { if (!cancelled && full) topBar.visibility = View.GONE }
             })
             start()
         }
         applySystemBars(v)
     }
 
+    /** 메뉴가 보일 때 웹페이지 위쪽이 메뉴에 가려지는 높이(px) */
+    private fun visTop(fullState: Boolean = full): Int = if (fullState) 0 else if (!full && topBar.height > 0) topBar.height else menuHeightPx()
+    /** 화면에 실제로 보이는(가려지지 않은) 웹페이지 높이(px): 웹뷰는 화면 전체 크기, 메뉴가 보이면 위는 메뉴·아래는 내비게이션 바가 가림 */
+    private fun visibleH(fullState: Boolean = full): Int = if (fullState) web.height else (web.height - visTop(fullState) - navInset).coerceAtLeast(1)
+
     private var atBottomShown = false
     private fun atBottom() = web.contentHeight > 0 && web.scrollY > 0 &&
-        web.scrollY + web.height >= web.contentHeight * density - 80
+        web.scrollY + web.height - (if (full) 0 else navInset) >= web.contentHeight * density - 80
 
     // ---- 스크롤바: 오른쪽 가장자리를 터치/드래그해 원하는 위치로 이동 ----
     @SuppressLint("ClickableViewAccessibility")
@@ -637,12 +618,9 @@ class MainActivity : Activity() {
 
     /** onDecided(이동 비율(0~1, 설정 이동 거리 대비 실제), 이동 시간 ms): 실제 이동이 정해진 시점에 호출(자동 방식2 대기 계산용) */
     private fun pageScroll(dir: Int, onDecided: ((Float, Int) -> Unit)? = null) {
-        // 메뉴 상태가 바뀐 뒤의 최종 웹뷰 높이를 setFull 호출 전에 계산(setFull이 여백을 즉시 바꾸므로)
-        val wasFull = full
-        val finalH = if (editMode) web.height
-            else if (dir > 0 && !wasFull) web.height + (web.layoutParams as FrameLayout.LayoutParams).let { it.topMargin + it.bottomMargin } // 메뉴·시스템바가 숨겨져 높이가 늘어남
-            else if (dir < 0 && wasFull) (web.height - menuHeightPx() - navInset).coerceAtLeast(1) // 메뉴가 다시 나와 높이가 줄어듦
-            else web.height
+        // 이동 거리는 메뉴 상태가 바뀐 뒤(아래로: 메뉴 숨김, 위로: 메뉴 표시) 화면에 보이는 높이 기준
+        val finalFull = if (editMode) full else dir > 0
+        val finalH = visibleH(finalFull); val finalTop = visTop(finalFull)
         setFull(dir > 0)
         if (dir > 0 && autoNext && atBottom()) { goNext(); return }
         val dist = (finalH * (if (two) pageRatio2 else pageRatio) / 100f).toInt() * dir
@@ -652,7 +630,7 @@ class MainActivity : Activity() {
         if (info == null || System.currentTimeMillis() - snapInfoAt > 6000) {
             animateScroll(dist); onDecided?.invoke(1f, smoothMs); scheduleAnalysis(); return
         }
-        val d = computeSnap(info, dist, finalH)
+        val d = computeSnap(info, dist, finalH, finalTop)
         // 이동 시간 설정은 '기본 이동 거리' 기준이므로, 실제 이동한 거리 비율만큼 보정해 속도가 일정하게 느껴지게 함
         val ms = if (d == null || dist == 0) smoothMs else (smoothMs * abs(d).toFloat() / abs(dist)).toInt().coerceIn(minOf(smoothMs, 120), smoothMs * 8)
         animateScroll(d ?: dist, ms)
@@ -764,7 +742,7 @@ class MainActivity : Activity() {
             Toast.makeText(this@MainActivity, "영역 ${blackL}% · ${blackW}% · ${blackH}dp", Toast.LENGTH_SHORT).show()
         } }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
         scrim.addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
-            leftMargin = dp(10) + insetL; rightMargin = dp(10) + insetR; bottomMargin = dp(10) + (web.layoutParams as FrameLayout.LayoutParams).bottomMargin })
+            leftMargin = dp(10) + insetL; rightMargin = dp(10) + insetR; bottomMargin = dp(10) + (if (full) 0 else navInset) })
         root.addView(scrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         regionScrim = scrim
     }
@@ -838,11 +816,12 @@ class MainActivity : Activity() {
     }
 
     /** 이동 목표를 단색 띠 앞/뒤로 조정(멈춤·건너뜀). 설정한 무시 구간(%) 이내의 띠는 무시. 해당 없으면 null(일반 이동) */
-    private fun computeSnap(parsed: Parsed, dist: Int, viewH: Int): Int? {
+    /** viewH: 가려지지 않고 보이는 높이(px), viewTop: 웹뷰 맨 위에서 보이는 영역이 시작하는 위치(px, 메뉴에 가려진 높이) */
+    private fun computeSnap(parsed: Parsed, dist: Int, viewH: Int, viewTop: Int = 0): Int? {
         val bands = bandsOf(parsed)
         // 이동 애니메이션이 진행 중이면 그 목표 위치를 현재 위치로 사용(연타 시 어긋남 방지)
         val curPx = if (pageAnim?.isRunning == true) animTargetY else web.scrollY
-        val cur = curPx / density; val hCss = viewH / density
+        val cur = (curPx + viewTop) / density; val hCss = viewH / density
         val visH = if (two) 2 * hCss else hCss // 두쪽 보기는 오른쪽 칸 끝까지가 보이는 범위
         val d = abs(dist) / density
         val tol = 12f

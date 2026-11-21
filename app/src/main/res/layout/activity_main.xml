@@ -7,7 +7,7 @@
     <WebView android:id="@+id/web" android:layout_width="match_parent" android:layout_height="match_parent"
         android:scrollbars="none" />
 
-    <!-- 상단 메뉴: 페이지를 아래로 밀며 나타남. 1행 = 뒤로 · 주소 · 이동, 2행 = 기능 -->
+    <!-- 상단 메뉴: 웹페이지 위에 덮여 위에서 내려옴(웹뷰는 움직이지 않음). 1행 = 뒤로 · 주소 · 이동, 2행 = 기능 -->
     <LinearLayout android:id="@+id/topBar" android:layout_width="match_parent"
         android:layout_height="wrap_content" android:orientation="vertical"
         android:layout_gravity="top" android:background="@color/bar">
