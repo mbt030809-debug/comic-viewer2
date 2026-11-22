@@ -83,10 +83,10 @@ class WmEngine(private val codec: WmCodec, private val file: File?) {
     }
 
     /** 진단용 한 줄: 검사한 이미지 수, 지운 수, 마지막 오류 */
-    fun diag(): String = "검사 $eligible · 지움 $cleanedTotal" + (if (cNn > 0) " · 신경망 $cNn" else "") + (if (skippedGuard > 0) " · 취소 $skippedGuard" else "") + (if (lastErr.isNotEmpty()) "\n오류: $lastErr" else "")
+    fun diag(): String = wm2?.diag() ?: "검사 $eligible · 지움 $cleanedTotal" + (if (cNn > 0) " · 신경망 $cNn" else "") + (if (skippedGuard > 0) " · 취소 $skippedGuard" else "") + (if (lastErr.isNotEmpty()) "\n오류: $lastErr" else "")
 
     /** 진단 전체(클립보드 복사용) */
-    fun fullDiag(): String = synchronized(lock) {
+    fun fullDiag(): String = wm2?.fullDiag() ?: synchronized(lock) {
         val sb = StringBuilder()
         sb.append("■ 상태: ").append(status()).append("\n").append(diag()).append("\n")
         sb.append("■ 이번 페이지: 검사 ${eligible}장 · 모델 ${models.size}개 · 찾기 시도 ${attempts}회(최대 24) · 풀 ${pool.size}장 · 있음 판정 $cPres · 둘레 단색 아님 $cRing · 상자 테두리 단색 아님 $cInterior · 변화 없음 $cNoChange")
@@ -101,22 +101,26 @@ class WmEngine(private val codec: WmCodec, private val file: File?) {
 
     /** 이 페이지에서 이미지를 가로챌 필요가 있는가(꺼졌거나, 여러 번 찾아도 없으면 false → 웹뷰가 직접 받음) */
     @Volatile var marker = true    // 인식 표시(가운데 빨간 점): 지우기와 별개로 켜고 끔
-    fun wants() = (enabled || marker) && !giveUp
+    /** 새 인식 엔진(wm2). 켜져 있으면 기존 인식·지우기는 건너뛰고(꺼진 것과 같음) 확정된 상자만 표시한다. 인식 표시(marker) 스위치가 켜기/끄기 */
+    @Volatile var wm2: com.example.comicviewer.wm2.Wm2Engine? = null
+    fun wants(): Boolean { wm2?.let { return marker && it.enabled }; return (enabled || marker) && !giveUp }
 
     /** 페이지 이동: 이번 화의 임시 상태 초기화(저장된 모델은 유지) */
     /** 새 페이지를 열 때마다 '다시 찾기'와 같이 처음부터: 저장된 모양을 버리고 이번 페이지의 이미지들에서 새로 찾음(바뀐 워터마크에 낡은 모양이 남지 않게) */
     fun onPage() {
+        wm2?.onPage()
         synchronized(samples) { samples.clear() }
         synchronized(lock) { models.clear(); pending = null; pool.clear(); attempts = 0; sinceTry = 0; giveUp = false; misses = 0; active = null; seen = 0; cleanedPage = 0; dirty = false }
     }
 
     /** 저장된 모델과 이번 화의 상태를 모두 버리고 처음부터 다시 찾음 */
     fun forget() {
+        wm2?.forget()
         synchronized(lock) { models.clear(); active = null; pool.clear(); attempts = 0; sinceTry = 0; giveUp = false; misses = 0; dirty = false }
         try { file?.delete() } catch (_: Exception) {}
     }
 
-    fun status(): String = synchronized(lock) {
+    fun status(): String = wm2?.status() ?: synchronized(lock) {
         val a = active
         when {
             !enabled -> "꺼짐"
@@ -131,6 +135,7 @@ class WmEngine(private val codec: WmCodec, private val file: File?) {
     /** 이미지 한 장 처리. 지운 결과(바이트)를 돌려주고, 바꿀 게 없거나 실패하면 null */
     fun process(bytes: ByteArray, mime: String): ByteArray? {
         if (!wants()) return null
+        wm2?.let { return it.process(bytes, mime) }
         try {
             val dim = codec.info(bytes) ?: run { lastErr = "이미지 해석 실패"; return null }
             val w = dim[0]; val h = dim[1]

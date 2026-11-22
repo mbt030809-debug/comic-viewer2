@@ -55,6 +55,8 @@ class MainActivity : Activity() {
     private var wmGain get() = prefs.getInt("wmGain", 100); set(v) = prefs.edit().putInt("wmGain", v).apply() // 그림 위 워터마크 보정 세기(%)
     private var wmL get() = prefs.getInt("wmL", 140); set(v) = prefs.edit().putInt("wmL", v).apply() // 로고 색 밝기
     private var wmMark get() = prefs.getBoolean("wmMark", true); set(v) = prefs.edit().putBoolean("wmMark", v).apply() // 인식 표시(빨간 점)
+    private var wm2On get() = prefs.getBoolean("wm2", true); set(v) = prefs.edit().putBoolean("wm2", v).apply() // 새 인식 엔진(wm2)
+    private var wm2Eng: com.example.comicviewer.wm2.Wm2Engine? = null
     private var wmOn get() = prefs.getBoolean("wm", true); set(v) = prefs.edit().putBoolean("wm", v).apply() // 워터마크 지우기
     private var smoothMs get() = prefs.getInt("ms", 500); set(v) = prefs.edit().putInt("ms", v).apply()
     private var pageRatio get() = prefs.getInt("ratio", 95); set(v) = prefs.edit().putInt("ratio", v).apply()
@@ -101,6 +103,15 @@ class MainActivity : Activity() {
         wm = WmGlue.create(filesDir); wm.engine.logSink = { android.util.Log.d("WmDiag", it) }; wm.engine.enabled = wmOn; wm.engine.marker = wmMark; wm.engine.gain = wmGain; wm.engine.logoL = wmL
         Thread { try { wm.engine.nn = OrtNet(assets.open("wm_net.onnx").use { it.readBytes() }) } catch (_: Throwable) { } }.also { it.isDaemon = true }.start() // 신경망 준비(실패하면 계산식만 사용)
         wm.engine.onModel = { runOnUiThread { try { val l = wm.takePlain(); if ((wmOn || wmMark) && l.isNotEmpty()) web.evaluateJavascript("window.__wmRetro&&window.__wmRetro(" + org.json.JSONArray(l).toString() + ")", null) } catch (_: Throwable) { } } } // 모양을 찾은 순간, 그 전에 원본으로 나간 이미지를 다시 받아 지움
+        // 새 인식 엔진(wm2): assets/wm2_unet.onnx 를 읽어 켜면 기존 인식·지우기는 건너뜀(실패하면 기존 방식 유지)
+        Thread {
+            try {
+                val d = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_unet.onnx").use { it.readBytes() }, 2)
+                val e = com.example.comicviewer.wm2.Wm2Engine(AndroidCodec(), d)
+                e.logSink = { android.util.Log.d("WmDiag", it) }; e.onConfirmed = { wm.engine.onModel?.invoke() }
+                wm2Eng = e; if (wm2On) wm.engine.wm2 = e
+            } catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 모델 로드 실패: $t") }
+        }.also { it.isDaemon = true }.start()
         web = findViewById(R.id.web); urlInput = findViewById(R.id.urlInput)
         urlInput.setOnFocusChangeListener { _, has ->
             if (has) { val t = urlInput.text.toString(); urlInput.setText(t); urlInput.selectAll() } // 편집 시작: 강조 없는 일반 글자로 바꾸고 전체 선택
@@ -137,7 +148,7 @@ class MainActivity : Activity() {
                 titleFresh = true
                 syncUrl(u)
                 injectScript()
-                if (wmOn) v.evaluateJavascript(WM_JS, null) else if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
+                if (wm.engine.wm2 != null) { if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null) } else if (wmOn) v.evaluateJavascript(WM_JS, null) else if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
                 handler.postDelayed({ checkTitle() }, 300)
                 if (resumeAuto) { resumeAuto = false; handler.postDelayed({ applyAuto(true) }, nextWait * 100L) }
                 else if (auto && autoPageMode) { handler.removeCallbacks(pageAutoRun); handler.postDelayed(pageAutoRun, 1500) } // 페이지 이동으로 지워진 방식2 예약 복구
@@ -1398,8 +1409,9 @@ class MainActivity : Activity() {
             }
         }
         group("워터마크", R.drawable.ic_wm) {
+            sw("새 인식 엔진 wm2 (기존 인식·지우기 대신 반복 확인된 상자를 표시)", wm2On) { wm2On = it; wm.engine.wm2 = if (it) wm2Eng else null; wm.engine.onPage(); wm.clearCache(); needReload = true }
             sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.enabled = it; wm.clearCache(); needReload = true }
-            sw("인식 표시(가운데 빨간 점)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true }
+            sw("인식 표시(빨간 점, wm2는 빨간 상자)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true }
             note {
                 web.evaluateJavascript("(window.__cvWmInfo||'')") { r -> wmJsInfo = try { (org.json.JSONTokener(r ?: "").nextValue() as? String) ?: "" } catch (_: Exception) { "" } }
                 wm.engine.status() + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n" + wm.engine.diag() +
