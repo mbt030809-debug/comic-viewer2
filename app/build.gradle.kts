@@ -21,6 +21,10 @@ android {
             keyPassword = "android"
         }
     }
+    buildTypes {
+        // wm2 시험 빌드: 패키지 이름을 달리해 기존 앱과 나란히 설치(서명·버전 충돌 방지). main 에 합칠 때는 제거
+        getByName("debug") { applicationIdSuffix = ".wm2"; versionNameSuffix = "-wm2" }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
