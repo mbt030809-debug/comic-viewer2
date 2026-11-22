@@ -1275,7 +1275,7 @@ class MainActivity : Activity() {
 
     // ---- 설정 ----
     private fun showSettings() {
-        var needInject = false; var needReload = false
+        var needInject = false; var needReload = false; var needClear = false
         var live = true // 시트가 열려 있는 동안만 상태 줄 갱신
         val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }
         val ui = createSheet("설정", "v$ver", sheetWidth(), (rootHeight() * 0.84f).toInt())
@@ -1409,15 +1409,15 @@ class MainActivity : Activity() {
             }
         }
         group("워터마크", R.drawable.ic_wm) {
-            sw("새 인식 엔진 wm2 (기존 인식·지우기 대신 반복 확인된 상자를 표시)", wm2On) { wm2On = it; wm.engine.wm2 = if (it) wm2Eng else null; wm.engine.onPage(); wm.clearCache(); needReload = true }
-            sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.enabled = it; wm.clearCache(); needReload = true }
-            sw("인식 표시(빨간 점, wm2는 빨간 상자)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true }
+            sw("새 인식 엔진 wm2 (기존 인식·지우기 대신 반복 확인된 상자를 표시)", wm2On) { wm2On = it; wm.engine.wm2 = if (it) wm2Eng else null; wm.engine.onPage(); wm.clearCache(); needReload = true; needClear = true }
+            sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.enabled = it; wm.clearCache(); needReload = true; needClear = true }
+            sw("인식 표시(빨간 점, wm2는 빨간 상자)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true; needClear = true }
             note {
                 web.evaluateJavascript("(window.__cvWmInfo||'')") { r -> wmJsInfo = try { (org.json.JSONTokener(r ?: "").nextValue() as? String) ?: "" } catch (_: Exception) { "" } }
                 wm.engine.status() + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n" + wm.engine.diag() +
                     (if (wm.lastFail.isNotEmpty()) "\n실패 원인: ${wm.lastFail}" else "") + (if (wmJsInfo.isNotEmpty()) "\n$wmJsInfo" else "")
             }
-            btn("다시 찾기") { wm.engine.forget(); needReload = true }
+            btn("다시 찾기") { wm.engine.forget(); wm.clearCache(); needReload = true; needClear = true }
             btn("진단 복사") {
                 val txt = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n실패 원인: ${wm.lastFail}\n" + wm.engine.fullDiag() + wmJsInfo
                 (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("wm", txt))
@@ -1448,7 +1448,7 @@ class MainActivity : Activity() {
         dlg.setOnDismissListener { // 완료/바깥 터치/뒤로가기/다른 편집기로 전환 등 어떤 경로로 닫아도 변경 사항 적용
             live = false
             updateTwoBtn()
-            if (needReload) web.reload() else if (needInject) injectScript()
+            if (needReload) { if (needClear) web.clearCache(true); web.reload() } else if (needInject) injectScript()
         }
         settingsDlg = dlg
         dlg.show()

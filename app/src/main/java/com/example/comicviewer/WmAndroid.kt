@@ -113,7 +113,7 @@ class WmGlue(val engine: WmEngine) {
     }
 
     private fun respond(o: Out): WebResourceResponse {
-        val hdr = HashMap<String, String>(); hdr["Access-Control-Allow-Origin"] = "*"; hdr["Cache-Control"] = "max-age=600"
+        val hdr = HashMap<String, String>(); hdr["Access-Control-Allow-Origin"] = "*"; hdr["Cache-Control"] = "no-store"   // 가공한 이미지(점·상자가 구워짐)를 웹뷰가 캐시하면 스위치를 꺼도 reload 때 그대로 보이므로 보관하지 않게 함(앱 안 캐시가 빠르게 응답)
         return WebResourceResponse(o.mime, null, 200, "OK", hdr, ByteArrayInputStream(o.bytes))
     }
 
