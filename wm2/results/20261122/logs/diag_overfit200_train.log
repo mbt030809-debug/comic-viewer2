@@ -1,0 +1,33 @@
+﻿?뚮씪誘명꽣 0.238M 쨌 ?μ튂 privateuseone:0
+step 50 loss 1.757 iou 0.028 0.75s/step 寃쎄낵 37s
+step 100 loss 1.592 iou 0.073 0.44s/step 寃쎄낵 44s
+step 150 loss 1.440 iou 0.264 0.33s/step 寃쎄낵 50s
+step 200 loss 1.298 iou 0.314 0.28s/step 寃쎄낵 56s
+step 250 loss 1.177 iou 0.338 0.25s/step 寃쎄낵 62s
+step 300 loss 1.076 iou 0.346 0.23s/step 寃쎄낵 68s
+step 350 loss 1.001 iou 0.377 0.21s/step 寃쎄낵 74s
+step 400 loss 0.931 iou 0.401 0.20s/step 寃쎄낵 80s
+step 450 loss 0.873 iou 0.465 0.19s/step 寃쎄낵 86s
+step 500 loss 0.823 iou 0.450 0.18s/step 寃쎄낵 92s
+step 550 loss 0.783 iou 0.457 0.18s/step 寃쎄낵 98s
+step 600 loss 0.750 iou 0.465 0.17s/step 寃쎄낵 104s
+step 650 loss 0.713 iou 0.468 0.17s/step 寃쎄낵 110s
+step 700 loss 0.691 iou 0.476 0.17s/step 寃쎄낵 116s
+step 750 loss 0.669 iou 0.499 0.16s/step 寃쎄낵 122s
+step 800 loss 0.645 iou 0.505 0.16s/step 寃쎄낵 128s
+step 850 loss 0.623 iou 0.519 0.16s/step 寃쎄낵 135s
+step 900 loss 0.628 iou 0.430 0.16s/step 寃쎄낵 141s
+step 950 loss 0.624 iou 0.532 0.15s/step 寃쎄낵 147s
+step 1000 loss 0.592 iou 0.519 0.15s/step 寃쎄낵 153s
+  [寃利? 留덉뒪??IoU 0.445 쨌 鍮?議곌컖 ?ㅺ?異쒖쑉 0.73
+step 1050 loss 0.574 iou 0.551 0.15s/step 寃쎄낵 160s
+step 1100 loss 0.559 iou 0.544 0.15s/step 寃쎄낵 166s
+step 1150 loss 0.547 iou 0.569 0.15s/step 寃쎄낵 172s
+step 1200 loss 0.537 iou 0.571 0.15s/step 寃쎄낵 178s
+step 1250 loss 0.528 iou 0.578 0.15s/step 寃쎄낵 185s
+step 1300 loss 0.522 iou 0.590 0.15s/step 寃쎄낵 191s
+step 1350 loss 0.518 iou 0.592 0.15s/step 寃쎄낵 198s
+step 1400 loss 0.515 iou 0.593 0.15s/step 寃쎄낵 204s
+step 1450 loss 0.514 iou 0.594 0.15s/step 寃쎄낵 210s
+step 1500 loss 0.513 iou 0.594 0.14s/step 寃쎄낵 217s
+  [寃利? 留덉뒪??IoU 0.423 쨌 鍮?議곌컖 ?ㅺ?異쒖쑉 0.73
