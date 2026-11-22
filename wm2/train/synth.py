@@ -5,9 +5,22 @@ from PIL import Image
 class Synth(torch.utils.data.Dataset):
     """배경 풀 + 스프라이트 풀을 즉석에서 합성. 항목: (이미지 3xSxS 0..1, 마스크 1xSxS)"""
     def __init__(self, root, n, seed, size=192):
-        self.bgs = np.load(os.path.join(root, 'bgs.npy'), mmap_mode='r'); self.spr = pickle.load(open(os.path.join(root, 'sprites.pkl'), 'rb'))
-        self.n, self.seed, self.S = n, seed, size
+        self.root, self.n, self.seed, self.S = root, n, seed, size
+        self._load()
+    def _load(self):
+        """풀 로딩. sprites_flat/ 가 있으면 메모리맵(워커끼리 공유, 수만 개도 RAM 거의 안 씀), 없으면 sprites.pkl."""
+        root = self.root; self.bgs = np.load(os.path.join(root, 'bgs.npy'), mmap_mode='r'); fd = os.path.join(root, 'sprites_flat')
+        if os.path.isdir(fd):
+            import json
+            kinds = json.load(open(os.path.join(fd, 'kinds.json'))); meta = np.load(os.path.join(fd, 'meta.npy')); A = np.load(os.path.join(fd, 'A.npy'), mmap_mode='r'); P = np.load(os.path.join(fd, 'P.npy'), mmap_mode='r')
+            self.spr = [(kinds[k], A[oa:oa + h * w].reshape(h, w), P[op:op + h * w * 3].reshape(h, w, 3)) for k, h, w, oa, op in meta.tolist()]
+        else: self.spr = pickle.load(open(os.path.join(root, 'sprites.pkl'), 'rb'))
         self.tile = [s for s in self.spr if s[0].startswith('tile') or s[0] == 'banner']; self.small = [s for s in self.spr if not (s[0].startswith('tile') or s[0] == 'banner')]
+    def __getstate__(self):   # 워커로 보낼 때 큰 배열을 복사하지 않고 각 워커가 다시 연다
+        d = dict(self.__dict__)
+        for k in ('bgs', 'spr', 'tile', 'small'): d.pop(k, None)
+        return d
+    def __setstate__(self, d): self.__dict__.update(d); self._load()
     def __len__(self): return self.n
     def __getitem__(self, i):
         r = np.random.default_rng(self.seed * 1000003 + i); S = self.S

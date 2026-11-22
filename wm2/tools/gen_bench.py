@@ -27,6 +27,12 @@ SYL = ['to', 'on', 'ma', 'ng', 'ko', 'ri', 'ta', 'zu', 'bo', 'mi', 'la', 'xe', '
 SUF = ['toon', 'manga', 'comics', 'hub', '.com', 'scan', 'webtoon', 'zone', 'world']
 BRANDS = [(220, 40, 40), (40, 90, 200), (30, 160, 90), (240, 150, 20), (120, 50, 170), (20, 20, 20), (235, 235, 235), (230, 70, 140), (0, 150, 170)]
 _fc = {}
+# 폰 글꼴이 없는 PC(Windows)에서 글꼴 종류별로 서로 다른 시스템 글꼴을 쓰도록 하는 대응표(없으면 아래 단일 대체 글꼴).
+_WIN = 'C:/Windows/Fonts/'
+_SUBST = {'DroidSans-Bold.ttf': ('arialbd.ttf', 0), 'DroidSans.ttf': ('segoeui.ttf', 0), 'NotoSerif-Bold.ttf': ('timesbd.ttf', 0),
+          'DancingScript-Regular.ttf': ('segoepr.ttf', 0), 'ComingSoon.ttf': ('comic.ttf', 0), 'CarroisGothicSC-Regular.ttf': ('bahnschrift.ttf', 0),
+          'NotoSerif-Italic.ttf': ('timesi.ttf', 0), 'CutiveMono.ttf': ('cour.ttf', 0), 'DroidSansMono.ttf': ('consola.ttf', 0),
+          'NotoSansCJK-Regular.ttc': ('malgun.ttf', 0), 'NotoSerifCJK-Regular.ttc': ('batang.ttc', 0)}
 
 
 def font(spec, size):
@@ -34,6 +40,10 @@ def font(spec, size):
     if k not in _fc:
         try: _fc[k] = ImageFont.truetype(FD + spec[0], size, index=spec[1])
         except OSError:
+            s = _SUBST.get(spec[0])
+            if s and os.path.exists(_WIN + s[0]):
+                try: _fc[k] = ImageFont.truetype(_WIN + s[0], size, index=s[1]); return _fc[k]
+                except OSError: pass
             for p in _FALLBACK:
                 if p and os.path.exists(p):
                     try: _fc[k] = ImageFont.truetype(p, size); break

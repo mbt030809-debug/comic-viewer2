@@ -36,4 +36,9 @@ if __name__ == '__main__':
     with Pool(a.jobs) as p:
         sp = [x for x in p.map(make_spr, range(a.nspr), chunksize=20) if x]
         import pickle; pickle.dump(sp, open(os.path.join(a.out, 'sprites.pkl'), 'wb')); print('스프라이트', len(sp))
-        bgs = np.stack(p.map(make_bg, range(a.nbg), chunksize=4)); np.save(os.path.join(a.out, 'bgs.npy'), bgs); print('배경', bgs.shape)
+        # 배경은 디스크 memmap 에 순서대로 기록(PC 에서 수만 장도 RAM 을 거의 안 쓴다)
+        bgs = np.lib.format.open_memmap(os.path.join(a.out, 'bgs.npy'), mode='w+', dtype=np.uint8, shape=(a.nbg, BH, BW, 3))
+        for i, b in enumerate(p.imap(make_bg, range(a.nbg), chunksize=4)):
+            bgs[i] = b
+            if i % 1000 == 0: print('배경 %d/%d' % (i, a.nbg), flush=True)
+        bgs.flush(); print('배경', bgs.shape)
