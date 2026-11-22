@@ -88,12 +88,13 @@ class WmGlue(val engine: com.example.comicviewer.wm2.Wm2Pipeline) {
         val host = r.url.host ?: return null
         fails[host]?.let { if (it[0] >= 3 && System.currentTimeMillis() - it[1] < 60_000) return null }
         val url = stripRetro(r.url.toString())
-        cache.get(url)?.let { return respond(it) }
-        val task = FutureTask<Out?> { fetch(url, h, host) }
-        val prev = inflight.putIfAbsent(url, task)
+        val ck = url + "#" + engine.flagsKey()               // 지우기·표시 설정이 다르면 다른 항목(다른 설정으로 만든 이미지가 섞이지 않음)
+        cache.get(ck)?.let { return respond(it) }
+        val task = FutureTask<Out?> { fetch(url, ck, h, host) }
+        val prev = inflight.putIfAbsent(ck, task)
         val t = prev ?: task.also { it.run() }
         val out = try { t.get(75, TimeUnit.SECONDS) } catch (_: Throwable) { null }
-        if (prev == null) inflight.remove(url)
+        if (prev == null) inflight.remove(ck)
         return out?.let { respond(it) }
     }
 
@@ -108,7 +109,7 @@ class WmGlue(val engine: com.example.comicviewer.wm2.Wm2Pipeline) {
     /** 워터마크 모양을 찾은 뒤 호출: 그동안 원본 그대로 내보낸 이미지들의 캐시를 비우고 그 주소 목록을 돌려줌(페이지가 다시 받으면 이번엔 지워서 내보냄) */
     fun takePlain(): List<String> {
         val l = plain.toList(); plain.clear()
-        for (u in l) { val c = cache.get(u); if (c != null && !c.cleaned) cache.remove(u) }
+        for (u in l) { val k = u + "#" + engine.flagsKey(); val c = cache.get(k); if (c != null && !c.cleaned) cache.remove(k) }
         return l
     }
 
@@ -117,7 +118,7 @@ class WmGlue(val engine: com.example.comicviewer.wm2.Wm2Pipeline) {
         return WebResourceResponse(o.mime, null, 200, "OK", hdr, ByteArrayInputStream(o.bytes))
     }
 
-    private fun fetch(url: String, reqHeaders: Map<String, String>, host: String): Out? {
+    private fun fetch(url: String, ck: String, reqHeaders: Map<String, String>, host: String): Out? {
         try {
             val d: Pair<ByteArray, String?>
             try { netSem.acquire() } catch (_: InterruptedException) { return null }
@@ -131,7 +132,7 @@ class WmGlue(val engine: com.example.comicviewer.wm2.Wm2Pipeline) {
                 try { processed = engine.process(bytes, mime) } finally { cpuSem.release() }
             }
             val out = if (processed != null) Out(processed, if (mime == "image/png") "image/png" else "image/jpeg", true) else Out(bytes, mime)
-            cache.put(url, out); ok++
+            cache.put(ck, out); ok++
             if (processed == null && (mime == "image/jpeg" || mime == "image/png" || mime == "image/webp") && plain.size < 300) plain.add(url)
             return out
         } catch (t: Throwable) { fail(host); bad++; lastFail = (t.message ?: t.javaClass.simpleName).take(60) + " " + host; return null }

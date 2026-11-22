@@ -26,15 +26,21 @@ class Wm2Pipeline(private val codec: WmCodec) {
     private val log = ArrayList<String>()
 
     fun wants(): Boolean = detector != null && (erase || showBoxes)
+    /** 지금 설정으로 만든 결과를 구분하는 값(지우기·표시 조합). 캐시 키에 넣어 다른 설정으로 만든 이미지가 섞이지 않게 함 */
+    fun flagsKey(): Int = (if (erase) 1 else 0) or (if (showBoxes) 2 else 0)
     fun onPage() = confirmer.reset()
     fun forget() = confirmer.reset()
 
     private fun note(t: String) { synchronized(log) { log.add(t); if (log.size > 60) log.removeAt(0) }; try { logSink?.invoke(t) } catch (_: Throwable) { } }
-    fun status(): String =
-        if (detector == null) "모델 준비 중"
-        else if (!erase && !showBoxes) "꺼짐"
-        else if (confirmer.everConfirmed) "워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
-        else "찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
+    fun status(): String {
+        val flags = "[엔진 상태] 지우기 ${if (erase) "켜짐" else "꺼짐"} · 위치 표시 ${if (showBoxes) "켜짐" else "꺼짐"}\n"
+        return flags + when {
+            detector == null -> "모델 준비 중"
+            !erase && !showBoxes -> "꺼짐"
+            confirmer.everConfirmed -> "워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
+            else -> "찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
+        }
+    }
     fun diag(): String = synchronized(log) { log.takeLast(12).joinToString("\n") }
     fun fullDiag(): String = status() + (if (lastErr.isNotEmpty()) "\n마지막 오류: $lastErr" else "") + "\n" + synchronized(log) { log.joinToString("\n") }
 
