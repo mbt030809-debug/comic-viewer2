@@ -42,9 +42,9 @@ class RefUNet(nn.Module):
         pt = self.pt(sk[3]); N, C, H8, W8 = pt.shape; kh, kw = pr.shape[2], pr.shape[3]
         if kh % 2 == 0: pr = F.pad(pr, (0, 0, 0, 1))       # 커널을 홀수 크기로(0 채움) → 합성곱 자체 패딩 사용
         if kw % 2 == 0: pr = F.pad(pr, (0, 1))
-        kh, kw = pr.shape[2], pr.shape[3]; G = self.G
+        kh, kw = RH // 8 + 1, RW // 8 + 1; G = self.G   # 예시 캔버스 크기는 고정(ONNX 변환에 커널 크기가 상수여야 함)
         # 샘플마다 서로 다른 커널 → 표본별 합성곱(채널을 G묶음으로 나눠 G장의 상관 지도). DML 의 배치-그룹 합성곱 역전파 오류를 피한다.
-        corr = torch.cat([F.conv2d(pt[n:n + 1], pr[n].reshape(G, C // G, kh, kw), padding=(kh // 2, kw // 2), groups=G) for n in range(N)], 0)
+        corr = torch.cat([F.conv2d(pt[n:n + 1], pr[n].reshape(G, self.cc // G, kh, kw), padding=(kh // 2, kw // 2), groups=G) for n in range(N)], 0)
         corr = corr / nbm.sum((1, 2, 3), keepdim=True).clamp(min=1)
         cf = self.cf(corr)
         x = self.enc[4](F.max_pool2d(sk[3], 2))
