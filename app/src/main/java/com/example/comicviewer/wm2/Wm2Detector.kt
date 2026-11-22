@@ -59,9 +59,13 @@ class Wm2Detector(model: ByteArray, threads: Int = 2) {
 
     private fun reflect(i: Int, n: Int) = if (i < n) i else 2 * (n - 1) - i
 
-    fun detect(img: WmImg, th: Float = 0.5f): List<Box> {
+    fun detect(img: WmImg, th: Float = 0.5f): List<Box> = detectMap(img, th).boxes
+
+    class Det(val boxes: List<Box>, val p: FloatArray, val w2: Int, val h2: Int)
+    /** 상자와 확률 지도(0.5배 좌표)를 함께 돌려준다(지우기는 지도를 마스크로 쓴다) */
+    fun detectMap(img: WmImg, th: Float = 0.5f): Det {
         val (p, w2, h2) = probMap(img)
-        return boxesFromMap(p, w2, h2, img.w, img.h, th)
+        return Det(boxesFromMap(p, w2, h2, img.w, img.h, th), p, w2, h2)
     }
 
     companion object {

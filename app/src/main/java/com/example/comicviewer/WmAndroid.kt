@@ -56,7 +56,7 @@ class AndroidCodec : WmCodec {
  * 웹뷰의 이미지 요청을 가로채 내려받고, 워터마크를 지운 이미지를 대신 돌려줌.
  * 어떤 단계든 실패하면 null(= 웹뷰가 원래대로 직접 받음). 같은 주소는 메모리 캐시/중복 요청 합치기.
  */
-class WmGlue(val engine: WmEngine) {
+class WmGlue(val engine: com.example.comicviewer.wm2.Wm2Pipeline) {
     @Volatile var pageUrl = ""
     @Volatile var reqs = 0    // 가로챈 요청 수(진단용)
     @Volatile var imgs = 0    // 그중 이미지로 보이는 요청 수
@@ -204,6 +204,6 @@ class WmGlue(val engine: WmEngine) {
             val r = (head + tail).removeSuffix("?").removeSuffix("&")
             return r
         }
-        fun create(dir: File): WmGlue = WmGlue(WmEngine(AndroidCodec(), File(dir, "wm_models.bin")))
+        fun create(): WmGlue = WmGlue(com.example.comicviewer.wm2.Wm2Pipeline(AndroidCodec()))
     }
 }

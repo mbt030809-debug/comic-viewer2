@@ -33,7 +33,6 @@ class MainActivity : Activity() {
     private lateinit var track: View
     private lateinit var thumb: View
     private lateinit var wm: WmGlue // 워터마크 자동 제거(이미지 요청을 가로채 가공)
-    private var wmJsInfo = ""       // 페이지 안 '겹쳐 올린 로고 요소' 숨김 현황(진단용)
     private val handler = Handler(Looper.getMainLooper())
     private val density get() = resources.displayMetrics.density
     private var rootW = 0 // 실제 레이아웃 너비(px). 접힘/펼침 전환 시 설정값이 늦게 갱신되는 문제를 피하려고 이것을 기준으로 판단
@@ -52,11 +51,7 @@ class MainActivity : Activity() {
     private var nextWait get() = prefs.getInt("nextWait", 20); set(v) = prefs.edit().putInt("nextWait", v).apply() // 다음화로 넘어온 뒤 자동 스크롤을 다시 시작하기까지 대기(0.1초 단위)
     private var autoNext get() = prefs.getBoolean("autoNext", true); set(v) = prefs.edit().putBoolean("autoNext", v).apply()
     private var foldAutoTwo get() = prefs.getBoolean("foldTwo", false); set(v) = prefs.edit().putBoolean("foldTwo", v).apply()
-    private var wmGain get() = prefs.getInt("wmGain", 100); set(v) = prefs.edit().putInt("wmGain", v).apply() // 그림 위 워터마크 보정 세기(%)
-    private var wmL get() = prefs.getInt("wmL", 140); set(v) = prefs.edit().putInt("wmL", v).apply() // 로고 색 밝기
-    private var wmMark get() = prefs.getBoolean("wmMark", true); set(v) = prefs.edit().putBoolean("wmMark", v).apply() // 인식 표시(빨간 점)
-    private var wm2On get() = prefs.getBoolean("wm2", true); set(v) = prefs.edit().putBoolean("wm2", v).apply() // 새 인식 엔진(wm2)
-    private var wm2Eng: com.example.comicviewer.wm2.Wm2Engine? = null
+    private var wmMark get() = prefs.getBoolean("wmMark", false); set(v) = prefs.edit().putBoolean("wmMark", v).apply() // 인식 위치 표시(빨간 상자)
     private var wmOn get() = prefs.getBoolean("wm", true); set(v) = prefs.edit().putBoolean("wm", v).apply() // 워터마크 지우기
     private var smoothMs get() = prefs.getInt("ms", 500); set(v) = prefs.edit().putInt("ms", v).apply()
     private var pageRatio get() = prefs.getInt("ratio", 95); set(v) = prefs.edit().putInt("ratio", v).apply()
@@ -100,17 +95,12 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         setupEdgeToEdge()
         prefs = getSharedPreferences("cv", MODE_PRIVATE)
-        wm = WmGlue.create(filesDir); wm.engine.logSink = { android.util.Log.d("WmDiag", it) }; wm.engine.enabled = wmOn; wm.engine.marker = wmMark; wm.engine.gain = wmGain; wm.engine.logoL = wmL
-        Thread { try { wm.engine.nn = OrtNet(assets.open("wm_net.onnx").use { it.readBytes() }) } catch (_: Throwable) { } }.also { it.isDaemon = true }.start() // 신경망 준비(실패하면 계산식만 사용)
-        wm.engine.onModel = { runOnUiThread { try { val l = wm.takePlain(); if ((wmOn || wmMark) && l.isNotEmpty()) web.evaluateJavascript("window.__wmRetro&&window.__wmRetro(" + org.json.JSONArray(l).toString() + ")", null) } catch (_: Throwable) { } } } // 모양을 찾은 순간, 그 전에 원본으로 나간 이미지를 다시 받아 지움
-        // 새 인식 엔진(wm2): assets/wm2_unet.onnx 를 읽어 켜면 기존 인식·지우기는 건너뜀(실패하면 기존 방식 유지)
+        // 워터마크: 인식(wm2 모델) → 확정 → 제거. 모델은 백그라운드에서 읽고, 준비되기 전에는 이미지를 건드리지 않음
+        wm = WmGlue.create(); wm.engine.logSink = { android.util.Log.d("WmDiag", it) }; wm.engine.erase = wmOn; wm.engine.showBoxes = wmMark
+        wm.engine.onConfirmed = { runOnUiThread { try { val l = wm.takePlain(); if (l.isNotEmpty()) web.evaluateJavascript("window.__wmRetro&&window.__wmRetro(" + org.json.JSONArray(l).toString() + ")", null) } catch (_: Throwable) { } } } // 처음 확정되는 순간, 그 전에 원본으로 나간 이미지를 다시 받아 처리
         Thread {
-            try {
-                val d = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_unet.onnx").use { it.readBytes() }, 2)
-                val e = com.example.comicviewer.wm2.Wm2Engine(AndroidCodec(), d)
-                e.logSink = { android.util.Log.d("WmDiag", it) }; e.onConfirmed = { wm.engine.onModel?.invoke() }
-                wm2Eng = e; if (wm2On) wm.engine.wm2 = e
-            } catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 모델 로드 실패: $t") }
+            try { wm.engine.detector = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_unet.onnx").use { it.readBytes() }, 2) }
+            catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 모델 로드 실패: $t") }
         }.also { it.isDaemon = true }.start()
         web = findViewById(R.id.web); urlInput = findViewById(R.id.urlInput)
         urlInput.setOnFocusChangeListener { _, has ->
@@ -148,7 +138,7 @@ class MainActivity : Activity() {
                 titleFresh = true
                 syncUrl(u)
                 injectScript()
-                if (wm.engine.wm2 != null) { if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null) } else if (wmOn) v.evaluateJavascript(WM_JS, null) else if (wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
+                if (wmOn || wmMark) v.evaluateJavascript(WM_RETRO_JS, null)
                 handler.postDelayed({ checkTitle() }, 300)
                 if (resumeAuto) { resumeAuto = false; handler.postDelayed({ applyAuto(true) }, nextWait * 100L) }
                 else if (auto && autoPageMode) { handler.removeCallbacks(pageAutoRun); handler.postDelayed(pageAutoRun, 1500) } // 페이지 이동으로 지워진 방식2 예약 복구
@@ -208,7 +198,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() { updateReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }; analyzer.shutdown(); applyAuto(false); stopHold(); handler.removeCallbacksAndMessages(null); handler2.removeCallbacksAndMessages(null); web.destroy(); super.onDestroy() }
-    override fun onPause() { wm.engine.persist(); calmSeconds = 0; syncUrl(web.url); touching = false; applyAuto(false); stopHold(); savePosNow(sync = true); web.onPause(); CookieManager.getInstance().flush(); super.onPause() }
+    override fun onPause() { calmSeconds = 0; syncUrl(web.url); touching = false; applyAuto(false); stopHold(); savePosNow(sync = true); web.onPause(); CookieManager.getInstance().flush(); super.onPause() }
     override fun onResume() { super.onResume(); web.onResume() }
     @Deprecated("") override fun onBackPressed() { if (closeRegionEditor()) return; if (web.canGoBack()) web.goBack() else super.onBackPressed() }
     override fun onKeyDown(k: Int, e: KeyEvent): Boolean = when (k) {
@@ -933,41 +923,6 @@ class MainActivity : Activity() {
 
     private class Series(var name: String, val key: String, var last: Int, var max: Int, val eps: MutableSet<Int>, var url: String, var time: Long, var base: String = "")
 
-    /** 진단용: 최근 검사한 원본 이미지(최대 8장)와 진단 글을 다운로드 폴더(ComicViewerWM)에 저장 */
-    private fun saveWmSamples() {
-        val imgs = wm.engine.sampleImages()
-        if (imgs.isEmpty()) { Toast.makeText(this, "저장할 이미지가 없음: 웹툰 페이지를 열고 이미지가 뜬 뒤 눌러주세요", Toast.LENGTH_LONG).show(); return }
-        Thread {
-            var n = 0; var where = ""
-            try {
-                val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
-                val diag = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n" + wm.engine.fullDiag()
-                fun put(name: String, mime: String, bytes: ByteArray) {
-                    if (android.os.Build.VERSION.SDK_INT >= 29) {
-                        val cv = android.content.ContentValues().apply {
-                            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
-                            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
-                            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/ComicViewerWM")
-                        }
-                        val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv) ?: return
-                        contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                        where = "다운로드/ComicViewerWM"
-                    } else {
-                        val dir = java.io.File(getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), "ComicViewerWM"); dir.mkdirs()
-                        java.io.File(dir, name).writeBytes(bytes); where = dir.absolutePath
-                    }
-                }
-                for ((i, b) in imgs.withIndex()) {
-                    val png = b.size > 8 && b[1] == 'P'.code.toByte() && b[2] == 'N'.code.toByte()
-                    val webp = b.size > 12 && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte()
-                    put("wm_${stamp}_${i + 1}" + (if (png) ".png" else if (webp) ".webp" else ".jpg"), if (png) "image/png" else if (webp) "image/webp" else "image/jpeg", b); n++
-                }
-                put("wm_${stamp}_diag.txt", "text/plain", diag.toByteArray(Charsets.UTF_8))
-            } catch (t: Throwable) { where = "실패: " + (t.message ?: t.javaClass.simpleName) }
-            runOnUiThread { Toast.makeText(this, if (n > 0 && !where.startsWith("실패")) "원본 ${n}장 + 진단 글 저장됨 → $where" else where, Toast.LENGTH_LONG).show() }
-        }.start()
-    }
-
     private fun loadSeries(): MutableList<Series> = try { loadSeriesRaw() } catch (_: Exception) { mutableListOf() }
     private fun loadSeriesRaw(): MutableList<Series> {
         val a = JSONArray(prefs.getString("series", "[]"))
@@ -1409,21 +1364,15 @@ class MainActivity : Activity() {
             }
         }
         group("워터마크", R.drawable.ic_wm) {
-            sw("새 인식 엔진 wm2 (기존 인식·지우기 대신 반복 확인된 상자를 표시)", wm2On) { wm2On = it; wm.engine.wm2 = if (it) wm2Eng else null; wm.engine.onPage(); wm.clearCache(); needReload = true; needClear = true }
-            sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.enabled = it; wm.clearCache(); needReload = true; needClear = true }
-            sw("인식 표시(빨간 점, wm2는 빨간 상자)", wmMark) { wmMark = it; wm.engine.marker = it; wm.clearCache(); needReload = true; needClear = true }
-            note {
-                web.evaluateJavascript("(window.__cvWmInfo||'')") { r -> wmJsInfo = try { (org.json.JSONTokener(r ?: "").nextValue() as? String) ?: "" } catch (_: Exception) { "" } }
-                wm.engine.status() + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n" + wm.engine.diag() +
-                    (if (wm.lastFail.isNotEmpty()) "\n실패 원인: ${wm.lastFail}" else "") + (if (wmJsInfo.isNotEmpty()) "\n$wmJsInfo" else "")
-            }
+            sw("워터마크 지우기", wmOn) { wmOn = it; wm.engine.erase = it; wm.clearCache(); needReload = true; needClear = true }
+            sw("인식 위치 표시(빨간 상자)", wmMark) { wmMark = it; wm.engine.showBoxes = it; wm.clearCache(); needReload = true; needClear = true }
+            note { wm.engine.status() + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n" + wm.engine.diag() + (if (wm.lastFail.isNotEmpty()) "\n실패 원인: ${wm.lastFail}" else "") }
             btn("다시 찾기") { wm.engine.forget(); wm.clearCache(); needReload = true; needClear = true }
             btn("진단 복사") {
-                val txt = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n실패 원인: ${wm.lastFail}\n" + wm.engine.fullDiag() + wmJsInfo
+                val txt = "v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" }) + " " + (web.url ?: "") + "\n요청 ${wm.reqs} · 이미지 ${wm.imgs} · 받음 ${wm.ok} · 실패 ${wm.bad}\n실패 원인: ${wm.lastFail}\n" + wm.engine.fullDiag()
                 (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("wm", txt))
                 Toast.makeText(this, "복사됨 · 대화창에 붙여넣기", Toast.LENGTH_SHORT).show()
             }
-            btn("진단용 원본 이미지 저장") { saveWmSamples() }
         }
         group("버튼", R.drawable.ic_apps) {
             bar("크기", 32, 96, btnSize, { "${it}dp" }) { btnSize = it; applyBtnSize() }
@@ -1463,64 +1412,6 @@ W.__wmRetro=function(urls){var set={},n=0,k;for(k=0;k<urls.length;k++)set[urls[k
   if(set[u]&&i.naturalWidth>=350){var s=u+(u.indexOf('?')<0?'?':'&')+'_wmr='+Date.now()+k;if(i.getAttribute('srcset')){i.removeAttribute('srcset')}i.src=s;n++}}
  return n};
 })();"""
-        private const val WM_JS = """(function(){
-if(window.__cvWmI)return;window.__cvWmI=1;
-var W=window,D=document,runs=0;W.__cvWmN=0;W.__cvWmInfo='';
-W.__wmRetro=function(urls){var set={},n=0,k;for(k=0;k<urls.length;k++)set[urls[k]]=1;
- var im=D.querySelectorAll('img');for(k=0;k<im.length;k++){var i=im[k],u=i.currentSrc||i.src;
-  if(set[u]&&i.naturalWidth>=350){var s=u+(u.indexOf('?')<0?'?':'&')+'_wmr='+Date.now()+k;if(i.getAttribute('srcset')){i.removeAttribute('srcset')}i.src=s;n++}}
- return n};
-function big(i){return i.naturalWidth>=350&&i.naturalHeight>=100}
-function run(){
- try{
-  var imgs=[].filter.call(D.images,function(i){return big(i)&&!(i.closest&&i.closest('#cv-root'))});
-  if(imgs.length<3){W.__cvWmInfo='겹침 검사: 큰 이미지 '+imgs.length+'장';return}
-  var rects=imgs.map(function(i){return i.getBoundingClientRect()});
-  var all=D.body.querySelectorAll('img,div,span,i,p,figure,picture,canvas');
-  var cand={};
-  for(var k=0;k<all.length&&k<6000;k++){
-   var e=all[k];
-   if(e.__cvwm||(e.closest&&e.closest('#cv-root,.cv-keep')))continue;
-   if(e.tagName==='IMG'&&big(e))continue;
-   var r=e.getBoundingClientRect(),w=r.width,h=r.height;
-   if(w<40||h<40||w>W.innerWidth*0.75)continue;
-   var cx=r.left+w/2,cy=r.top+h/2,over=-1;
-   for(var j=0;j<rects.length;j++){var q=rects[j];if(cx>=q.left&&cx<=q.right&&cy>=q.top&&cy<=q.bottom){over=j;break}}
-   if(over<0)continue;
-   var u='';
-   if(e.tagName==='IMG')u=e.currentSrc||e.src||'';
-   else{var b=getComputedStyle(e).backgroundImage;if(b&&b!=='none')u=b}
-   if(!u)continue;
-   var key=u+'|'+Math.round(w/8)+'x'+Math.round(h/8);
-   (cand[key]=cand[key]||[]).push([e,over])
-  }
-  var best='',bn=0,hide=0;
-  for(var key in cand){var g=cand[key],ds={};g.forEach(function(x){ds[x[1]]=1});var dn=Object.keys(ds).length;
-   if(dn>bn){bn=dn;best=key.split('|')[0]}
-   if(dn>=3){g.forEach(function(x){x[0].style.setProperty('visibility','hidden','important');x[0].__cvwm=1;hide++})}}
-  var fx=0,ft='';
-  for(var k2=0;k2<all.length&&k2<6000;k2++){
-   var e2=all[k2];
-   if(e2.__cvwm||(e2.closest&&e2.closest('#cv-root,.cv-keep,a,button')))continue;
-   if(e2.tagName==='IMG'&&big(e2))continue;
-   var r2=e2.getBoundingClientRect(),w2=r2.width,h2=r2.height,cy2=r2.top+h2/2;
-   if(w2<40||h2<40||w2>W.innerWidth*0.75||cy2<W.innerHeight*0.15||cy2>W.innerHeight*0.85)continue;
-   var u2='';
-   if(e2.tagName==='IMG')u2=e2.currentSrc||e2.src||'';
-   else{var b2=getComputedStyle(e2).backgroundImage;if(b2&&b2!=='none')u2=b2}
-   if(!u2)continue;
-   var fixed=false,p=e2;for(var d=0;d<7&&p&&p!==D.body;d++,p=p.parentElement){if(getComputedStyle(p).position==='fixed'){fixed=true;break}}
-   if(!fixed)continue;
-   e2.style.setProperty('visibility','hidden','important');e2.__cvwm=1;fx++;ft=u2.slice(-24)
-  }
-  hide+=fx;
-  W.__cvWmN+=hide;
-  W.__cvWmInfo='겹침 숨김 '+W.__cvWmN+'개'+(bn?(' · 최다 '+bn+'장 '+best.slice(-28)):'')
- }catch(e){W.__cvWmInfo='겹침 검사 오류 '+e.message}
-}
-W.__cvWmRun=run;
-var t=setInterval(function(){run();if(++runs>=30)clearInterval(t)},2000);run();
-})()"""
         // 두쪽 보기: 연속 세로 스트립을 좌/우 두 패널로 표시(왼쪽=현재 위치, 오른쪽=한 화면 아래).
         // 문서 스크롤(native)에 맞춰 두 스트립을 translate. 광고 제외 규칙은 사이트(localStorage)별 저장.
         private const val SCRIPT = """(function(){
