@@ -8,8 +8,9 @@ fun main(args: Array<String>) {
     val model = File(args[0]).readBytes(); val root = File(args[1]); val outd = File(args[2]); val filt = args.getOrNull(3) ?: ""
     val flags = (args.getOrNull(4) ?: "erase=1,show=0").split(",").associate { it.substringBefore("=") to (it.substringAfter("=") == "1") }
     val det = Wm2Detector(model, 3); val t0 = System.currentTimeMillis(); var n = 0; var ch = 0; var diffPx = 0L; var redPx = 0L
-    for (s in root.listFiles { f -> f.isDirectory && f.name.contains(filt) }!!.sortedBy { it.name }) {
+    for (s in root.listFiles { f -> f.isDirectory && f.name.contains(filt) && File(f, "gallery.png").exists() }!!.sortedBy { it.name }) {
         val pipe = Wm2Pipeline(JvmCodec()); pipe.detector = det; pipe.erase = flags["erase"] ?: true; pipe.showBoxes = flags["show"] ?: false
+        pipe.analyze(File(s, "gallery.png").readBytes())                 // 예시 마크 갤러리를 먼저 넣음
         val files = s.listFiles { f -> f.name.startsWith("img_") }!!.sortedBy { it.name }
         val bytes = files.map { it.readBytes() }
         for (b in bytes) pipe.process(b, "image/png")         // 1차: 앱이 받는 순서(확정 전 장은 원본)

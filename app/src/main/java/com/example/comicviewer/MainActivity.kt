@@ -99,7 +99,7 @@ class MainActivity : Activity() {
         wm = WmGlue.create(); wm.engine.logSink = { android.util.Log.d("WmDiag", it) }; wm.engine.erase = wmOn; wm.engine.showBoxes = wmMark
         wm.engine.onConfirmed = { runOnUiThread { try { val l = wm.takePlain(); if (l.isNotEmpty()) web.evaluateJavascript("window.__wmRetro&&window.__wmRetro(" + org.json.JSONArray(l).toString() + ")", null) } catch (_: Throwable) { } } } // 처음 확정되는 순간, 그 전에 원본으로 나간 이미지를 다시 받아 처리
         Thread {
-            try { wm.engine.detector = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_unet.onnx").use { it.readBytes() }, 2) }
+            try { wm.engine.detector = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_ref_unet.onnx").use { it.readBytes() }, 2) }
             catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 모델 로드 실패: $t") }
         }.also { it.isDaemon = true }.start()
         web = findViewById(R.id.web); urlInput = findViewById(R.id.urlInput)

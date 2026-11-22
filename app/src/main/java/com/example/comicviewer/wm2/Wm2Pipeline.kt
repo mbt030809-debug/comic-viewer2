@@ -7,17 +7,22 @@ import kotlin.math.min
 
 /**
  * 워터마크 처리의 전체 흐름. 이미지 한 장마다 한 방향으로만 흐른다:
- *   디코드 → [인식] Wm2Detector → [확정] Wm2Confirmer → [제거] Wm2Eraser → (표시) 빨간 상자 → 인코드
+ *   디코드 → [예시] 갤러리(흰/검정 배경의 원본 워터마크 이미지)면 예시 마크로 저장하고 끝
+ *   → [인식] 예시 마크마다 Wm2Detector → [확정] Wm2Confirmer → [제거] Wm2Eraser → (표시) 빨간 상자 → 인코드
+ * 예시(갤러리)가 아직 안 나왔으면 인식하지 않고 원본 그대로 둔다. 예시가 처음 나오는 순간 앞서 지나간 이미지를 다시 받게 한다.
  * 지운 뒤 다시 인식하는 단계는 없다. 각 단계는 서로의 내부를 모른다.
  */
 class Wm2Pipeline(private val codec: WmCodec) {
     class Analysis(val confirmed: List<Wm2Detector.Box>, val p: FloatArray, val w2: Int, val h2: Int)
+    @Volatile private var refs: List<FloatArray> = emptyList()   // 이 페이지의 예시 마크(갤러리 위→아래 순서)
+    @Volatile private var refsKey = 0L
+    val refCount: Int get() = refs.size
 
     @Volatile var detector: Wm2Detector? = null      // 모델이 준비되기 전에는 아무것도 하지 않음
     @Volatile var erase = true                       // 확정된 워터마크 지우기
     @Volatile var showBoxes = false                  // 확정된 자리에 빨간 상자 표시
     @Volatile var logSink: ((String) -> Unit)? = null
-    @Volatile var onConfirmed: (() -> Unit)? = null  // 처음 확정되는 순간: 앞서 원본으로 나간 이미지를 다시 받게 함
+    @Volatile var onConfirmed: (() -> Unit)? = null  // 예시가 처음 나왔을 때·처음 확정될 때: 앞서 원본으로 나간 이미지를 다시 받게 함
     @Volatile var lastErr = ""
     @Volatile private var seen = 0
     @Volatile private var changed = 0
@@ -28,17 +33,18 @@ class Wm2Pipeline(private val codec: WmCodec) {
     fun wants(): Boolean = detector != null && (erase || showBoxes)
     /** 지금 설정으로 만든 결과를 구분하는 값(지우기·표시 조합). 캐시 키에 넣어 다른 설정으로 만든 이미지가 섞이지 않게 함 */
     fun flagsKey(): Int = (if (erase) 1 else 0) or (if (showBoxes) 2 else 0)
-    fun onPage() = confirmer.reset()
-    fun forget() = confirmer.reset()
+    fun onPage() { confirmer.reset(); refs = emptyList(); refsKey = 0L }
+    fun forget() = onPage()
 
     private fun note(t: String) { synchronized(log) { log.add(t); if (log.size > 60) log.removeAt(0) }; try { logSink?.invoke(t) } catch (_: Throwable) { } }
     fun status(): String {
         val flags = "[엔진 상태] 지우기 ${if (erase) "켜짐" else "꺼짐"} · 위치 표시 ${if (showBoxes) "켜짐" else "꺼짐"}\n"
         return flags + when {
             detector == null -> "모델 준비 중"
+            refs.isEmpty() -> "예시 마크 기다리는 중(흰/검정 배경의 원본 워터마크 이미지가 나오면 시작) · 검사 ${seen}장"
             !erase && !showBoxes -> "꺼짐"
-            confirmer.everConfirmed -> "워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
-            else -> "찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
+            confirmer.everConfirmed -> "예시 ${refs.size}개 · 워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
+            else -> "예시 ${refs.size}개 · 찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
         }
     }
     fun diag(): String = synchronized(log) { log.takeLast(12).joinToString("\n") }
@@ -52,8 +58,21 @@ class Wm2Pipeline(private val codec: WmCodec) {
         if (w < 350 || h < 100 || w > 4000 || h > 30000 || w.toLong() * h > 16_000_000L || w.toFloat() / h > 8f) return null
         val t0 = System.currentTimeMillis()
         val img = codec.small(bytes, 1) ?: run { lastErr = "디코드 실패"; return null }
-        val d = det.detectMap(img)
-        val boxes = Wm2Confirmer.tileMerge(d.boxes, w, h)
+        // 갤러리(예시 마크 이미지)면 예시로 저장하고 이 장은 건드리지 않음
+        val g = Wm2Gallery.find(img)
+        if (g != null) {
+            val key = bytes.size * 31L + bytes.contentHashCode()
+            if (key != refsKey) {
+                refs = g.map { Wm2Gallery.makeRef(img, it) }; refsKey = key
+                note("예시 마크 ${g.size}개 확보 (${w}x$h)")
+                try { onConfirmed?.invoke() } catch (_: Throwable) { }
+            }
+            return null
+        }
+        val rs = refs
+        if (rs.isEmpty()) { seen++; return null }
+        val d = det.detect(img, rs)
+        val boxes = d.boxes
         lastMs = System.currentTimeMillis() - t0; seen++
         val r = confirmer.confirm(bytes.size * 31L + bytes.contentHashCode(), w, h, boxes)
         note("#$seen ${w}x$h 후보 ${boxes.size}개 · 비교 ${r.others}장" + (if (r.others < Wm2Confirmer.MIN_OTHERS) " → 판정 대기" else " → 확정 ${r.confirmed.size}개"))
