@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """1단계 평가(단색 여백의 예시 워터마크 찾기). 사용:
  python eval_s1.py --bench <refdata3 또는 fresh> --tiers core,val --method rule:3 | learned:<ckpt.pt> [--tag X] [--out rows_s1.jsonl] [--device dml]
 정답: truth.json 의 image.example_marks(예시 마크 상자). 지표: 예시 재현율(IoU≥0.5), 정밀도, 오검출 구성(캡션 여백 / 그림 위 마크(2단계 대상) / 그 외=말풍선·머리·눈 등), 예시가 없는 이미지의 오검출률, 종류별 재현율."""
@@ -20,6 +20,26 @@ def overlap_frac(a, b):
     ax, ay, aw, ah = a[:4]; bx, by, bw, bh = b[:4]
     ix, iy = max(0, min(ax + aw, bx + bw) - max(ax, bx)), max(0, min(ay + ah, by + bh) - max(ay, by)); return ix * iy / max(1, aw * ah)
 
+MERGE = int(os.environ.get('S1_MERGE', '6'))   # 마크 조각을 한 상자로 묶는 팽창 반경(0.5배 픽셀). 여백 안의 마크는 서로 멀어서 크게 잡아도 된다
+TILE = int(os.environ.get('S1_TILE', '0'))   # 0 이면 페이지 전체를 한 번에. 학습 조각(256)과 같은 크기로 잘라 넣어 GroupNorm 통계 차이를 없앤다.
+
+
+def infer_prob(net, dev, a):
+    """a: [1,3,h,w] float(16배수). 겹치는 타일(TILE, 보폭 TILE*3/4)로 돌려 확률을 평균한다."""
+    import torch
+    _, _, h, w = a.shape
+    if TILE <= 0 or (h <= TILE and w <= TILE):
+        with torch.no_grad(): return torch.sigmoid(net(torch.from_numpy(a).to(dev)))[0, 0].cpu().numpy()
+    st = TILE * 3 // 4; acc = np.zeros((h, w), np.float32); cnt = np.zeros((h, w), np.float32)
+    ys = list(range(0, max(1, h - TILE + 1), st)); xs = list(range(0, max(1, w - TILE + 1), st))
+    if ys[-1] + TILE < h: ys.append(h - TILE)
+    if xs[-1] + TILE < w: xs.append(w - TILE)
+    for y in ys:
+        for x in xs:
+            y1, x1 = min(h, y + TILE), min(w, x + TILE)
+            with torch.no_grad(): p = torch.sigmoid(net(torch.from_numpy(a[:, :, y:y1, x:x1].copy()).to(dev)))[0, 0].cpu().numpy()
+            acc[y:y1, x:x1] += p; cnt[y:y1, x:x1] += 1
+    return acc / np.maximum(cnt, 1)
 
 def load_method(spec, device):
     kind, _, arg = spec.partition(':')
@@ -33,9 +53,9 @@ def load_method(spec, device):
         dev = get_device(device); d = torch.load(arg, map_location='cpu', weights_only=True); net = UNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
         def run(img):
             W, H = img.size; w, h = W // 2, H // 2; a = np.asarray(img.resize((w, h), Image.BOX), np.float32) / 255; a = np.pad(a, ((0, (-h) % 16), (0, (-w) % 16), (0, 0)), mode='reflect').transpose(2, 0, 1)[None].copy()
-            with torch.no_grad(): p = torch.sigmoid(net(torch.from_numpy(a).to(dev)))[0, 0].cpu().numpy()
+            p = infer_prob(net, dev, a)
             out = []
-            for b in boxes_from_mask(p, W, H, th=.5, tile_frac=2.0):
+            for b in boxes_from_mask(p, W, H, th=.5, tile_frac=2.0, merge=MERGE):
                 if b[2] * b[3] <= .2 * W * H and b[2] >= .06 * W and b[3] >= 18: out.append((b[0], b[1], b[2], b[3], b[5]))   # 크기 사양(너무 작은 것·배경 전체 제외)
             return out
         return run
@@ -47,7 +67,7 @@ def load_method(spec, device):
         ver, _, ck = arg.partition(':'); dev = get_device(device); d = torch.load(ck, map_location='cpu', weights_only=True); net = UNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
         def run(img):
             W, H = img.size; w, h = W // 2, H // 2; a = np.asarray(img.resize((w, h), Image.BOX), np.float32) / 255; a = np.pad(a, ((0, (-h) % 16), (0, (-w) % 16), (0, 0)), mode='reflect').transpose(2, 0, 1)[None].copy()
-            with torch.no_grad(): p = torch.sigmoid(net(torch.from_numpy(a).to(dev)))[0, 0].cpu().numpy()
+            p = infer_prob(net, dev, a)
             out = []
             for b in s1_rule.detect(np.asarray(img), int(ver)):
                 x0, y0, x1, y1 = b[0] // 2, b[1] // 2, (b[0] + b[2]) // 2 + 1, (b[1] + b[3]) // 2 + 1; reg = p[y0:y1, x0:x1]
@@ -99,3 +119,5 @@ def main():
 
 
 if __name__ == '__main__': main()
+
+
