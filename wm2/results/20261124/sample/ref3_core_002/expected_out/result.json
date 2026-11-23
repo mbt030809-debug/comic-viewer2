@@ -1,20 +1,32 @@
 {
  "settings": {
   "inputs": [
-   "C:\\wm2work\\refdata3\\core\\ref3_core_002"
+   "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_002"
   ],
-  "s1net": "C:\\wm2work\\export\\pc20261124\\wm2_s1_unet_10k_20261124.onnx",
-  "s2net": "C:\\wm2work\\export\\pc20261124\\wm2_ref_unet_25k_20261124.onnx",
-  "s1": "hybrid",
-  "consensus": 0.5,
-  "also_tm": 0.0,
+  "s1net": null,
+  "s2net": null,
+  "s1": "rule",
+  "s2": "kp",
+  "kp_min": 6,
+  "consensus": 0,
+  "also_kp": 0,
   "vmin": 1,
   "th": 0.5,
-  "out": "C:\\wm2work\\export\\pc20261124\\sample\\ref3_core_002\\expected_out"
+  "out": "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_002\\expected_out"
  },
  "examples": [
   {
-   "id": 0,
+   "id": 1,
+   "image": "img_05.png",
+   "box": [
+    348,
+    759,
+    295,
+    59
+   ]
+  },
+  {
+   "id": 2,
    "image": "img_06.png",
    "box": [
     328,
@@ -22,44 +34,136 @@
     64,
     64
    ]
+  },
+  {
+   "id": 4,
+   "image": "img_06.png",
+   "box": [
+    257,
+    992,
+    206,
+    139
+   ]
+  },
+  {
+   "id": 5,
+   "image": "img_07.png",
+   "box": [
+    61,
+    1592,
+    62,
+    62
+   ]
   }
  ],
  "detections": [
   {
-   "image": "img_04.png",
-   "example": 0,
+   "image": "img_07.png",
+   "example": 1,
    "box": [
-    40,
-    1292,
-    72,
-    72
+    127,
+    954,
+    179,
+    87
    ],
-   "score": 0.994,
-   "by": "nn"
+   "score": 6.0,
+   "by": "kp"
   },
   {
-   "image": "img_07.png",
-   "example": 0,
+   "image": "img_02.png",
+   "example": 2,
    "box": [
-    542,
-    414,
-    84,
-    82
-   ],
-   "score": 0.989,
-   "by": "nn"
-  },
-  {
-   "image": "img_07.png",
-   "example": 0,
-   "box": [
+    438,
+    162,
     60,
-    1590,
-    64,
-    64
+    60
    ],
-   "score": 0.986,
-   "by": "nn"
+   "score": 7.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_07.png",
+   "example": 2,
+   "box": [
+    540,
+    411,
+    87,
+    87
+   ],
+   "score": 6.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_02.png",
+   "example": 4,
+   "box": [
+    412,
+    1146,
+    202,
+    137
+   ],
+   "score": 54.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_05.png",
+   "example": 4,
+   "box": [
+    266,
+    946,
+    165,
+    112
+   ],
+   "score": 25.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_05.png",
+   "example": 4,
+   "box": [
+    21,
+    497,
+    201,
+    137
+   ],
+   "score": 19.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_07.png",
+   "example": 4,
+   "box": [
+    81,
+    1411,
+    189,
+    145
+   ],
+   "score": 53.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_08.png",
+   "example": 4,
+   "box": [
+    252,
+    755,
+    211,
+    143
+   ],
+   "score": 43.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_02.png",
+   "example": 5,
+   "box": [
+    438,
+    162,
+    60,
+    60
+   ],
+   "score": 6.0,
+   "by": "kp"
   }
  ]
 }

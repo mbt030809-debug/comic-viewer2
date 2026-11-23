@@ -1,20 +1,42 @@
 {
  "settings": {
   "inputs": [
-   "C:\\wm2work\\refdata3\\core\\ref3_core_020"
+   "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_020"
   ],
-  "s1net": "C:\\wm2work\\export\\pc20261124\\wm2_s1_unet_10k_20261124.onnx",
-  "s2net": "C:\\wm2work\\export\\pc20261124\\wm2_ref_unet_25k_20261124.onnx",
-  "s1": "hybrid",
-  "consensus": 0.5,
-  "also_tm": 0.0,
+  "s1net": null,
+  "s2net": null,
+  "s1": "rule",
+  "s2": "kp",
+  "kp_min": 6,
+  "consensus": 0,
+  "also_kp": 0,
   "vmin": 1,
   "th": 0.5,
-  "out": "C:\\wm2work\\export\\pc20261124\\sample\\ref3_core_020\\expected_out"
+  "out": "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_020\\expected_out"
  },
  "examples": [
   {
-   "id": 0,
+   "id": 1,
+   "image": "img_07.jpg",
+   "box": [
+    277,
+    1298,
+    166,
+    115
+   ]
+  },
+  {
+   "id": 2,
+   "image": "img_07.jpg",
+   "box": [
+    104,
+    1117,
+    74,
+    74
+   ]
+  },
+  {
+   "id": 3,
    "image": "img_07.jpg",
    "box": [
     291,
@@ -26,16 +48,148 @@
  ],
  "detections": [
   {
-   "image": "img_06.jpg",
-   "example": 0,
+   "image": "img_01.jpg",
+   "example": 1,
    "box": [
-    102,
-    370,
-    334,
-    62
+    235,
+    1384,
+    144,
+    115
    ],
-   "score": 0.956,
-   "by": "nn"
+   "score": 20.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_01.jpg",
+   "example": 1,
+   "box": [
+    33,
+    1532,
+    157,
+    117
+   ],
+   "score": 8.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_04.jpg",
+   "example": 1,
+   "box": [
+    339,
+    1055,
+    206,
+    144
+   ],
+   "score": 30.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_04.jpg",
+   "example": 2,
+   "box": [
+    318,
+    42,
+    76,
+    76
+   ],
+   "score": 8.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_05.jpg",
+   "example": 2,
+   "box": [
+    233,
+    291,
+    72,
+    72
+   ],
+   "score": 8.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_06.jpg",
+   "example": 2,
+   "box": [
+    422,
+    434,
+    78,
+    78
+   ],
+   "score": 11.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_01.jpg",
+   "example": 3,
+   "box": [
+    133,
+    395,
+    289,
+    56
+   ],
+   "score": 32.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_01.jpg",
+   "example": 3,
+   "box": [
+    226,
+    395,
+    289,
+    58
+   ],
+   "score": 6.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_04.jpg",
+   "example": 3,
+   "box": [
+    263,
+    478,
+    284,
+    55
+   ],
+   "score": 52.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_04.jpg",
+   "example": 3,
+   "box": [
+    175,
+    477,
+    280,
+    56
+   ],
+   "score": 7.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_06.jpg",
+   "example": 3,
+   "box": [
+    99,
+    367,
+    338,
+    66
+   ],
+   "score": 94.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_06.jpg",
+   "example": 3,
+   "box": [
+    22,
+    344,
+    308,
+    88
+   ],
+   "score": 8.0,
+   "by": "kp"
   }
  ]
 }

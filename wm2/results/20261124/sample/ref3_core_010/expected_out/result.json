@@ -1,16 +1,18 @@
 {
  "settings": {
   "inputs": [
-   "C:\\wm2work\\refdata3\\core\\ref3_core_010"
+   "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_010"
   ],
-  "s1net": "C:\\wm2work\\export\\pc20261124\\wm2_s1_unet_10k_20261124.onnx",
-  "s2net": "C:\\wm2work\\export\\pc20261124\\wm2_ref_unet_25k_20261124.onnx",
-  "s1": "hybrid",
-  "consensus": 0.5,
-  "also_tm": 0.0,
+  "s1net": null,
+  "s2net": null,
+  "s1": "rule",
+  "s2": "kp",
+  "kp_min": 6,
+  "consensus": 0,
+  "also_kp": 0,
   "vmin": 1,
   "th": 0.5,
-  "out": "C:\\wm2work\\export\\pc20261124\\sample\\ref3_core_010\\expected_out"
+  "out": "C:\\wm2work\\repo_pc\\wm2\\results\\20261124\\sample\\ref3_core_010\\expected_out"
  },
  "examples": [
   {
@@ -29,73 +31,61 @@
    "image": "img_02.png",
    "example": 0,
    "box": [
-    466,
-    1518,
-    198,
+    463,
+    1517,
+    202,
     72
    ],
-   "score": 0.981,
-   "by": "nn"
+   "score": 25.0,
+   "by": "kp"
   },
   {
    "image": "img_05.png",
    "example": 0,
    "box": [
-    48,
-    668,
-    218,
-    76
+    158,
+    1038,
+    170,
+    80
    ],
-   "score": 0.978,
-   "by": "nn"
-  },
-  {
-   "image": "img_05.png",
-   "example": 0,
-   "box": [
-    162,
-    1042,
-    164,
-    72
-   ],
-   "score": 0.98,
-   "by": "nn"
+   "score": 11.0,
+   "by": "kp"
   },
   {
    "image": "img_06.png",
    "example": 0,
    "box": [
-    192,
-    202,
+    190,
+    204,
+    139,
+    50
+   ],
+   "score": 16.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_07.png",
+   "example": 0,
+   "box": [
+    353,
+    773,
+    153,
+    57
+   ],
+   "score": 13.0,
+   "by": "kp"
+  },
+  {
+   "image": "img_07.png",
+   "example": 0,
+   "box": [
+    416,
+    118,
     144,
-    52
+    68
    ],
-   "score": 0.981,
-   "by": "nn"
-  },
-  {
-   "image": "img_07.png",
-   "example": 0,
-   "box": [
-    424,
-    132,
-    132,
-    48
-   ],
-   "score": 0.975,
-   "by": "nn"
-  },
-  {
-   "image": "img_07.png",
-   "example": 0,
-   "box": [
-    356,
-    774,
-    164,
-    58
-   ],
-   "score": 0.931,
-   "by": "nn"
+   "score": 6.0,
+   "by": "kp"
   }
  ]
 }

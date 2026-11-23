@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""wm2 인식 파이프라인 기준 구현 (PC 시험·앱 이식용). torch 없이 onnxruntime + numpy + pillow + scipy 만 필요.
-사용: python pipeline_ref.py <이미지 폴더 또는 이미지들...> --s1net wm2_s1_unet_10k_20261124.onnx --s2net wm2_ref_unet_25k_20261124.onnx [--s1 hybrid|rule|neural] [--consensus 0.5] [--out 결과폴더]
+"""wm2 인식 파이프라인 기준 구현 (PC 시험·앱 이식용).
+기본 설정은 **신경망 없이** 규칙 + SIFT 특징점 매칭만 쓴다(빠름): pip install numpy pillow scipy opencv-python-headless
+ python pipeline_ref.py <이미지 폴더 또는 이미지들...> [--out 결과폴더]
 입력: 같은 사이트 이미지 3~8장(순서 무관). 그중 어느 한 장의 단색(흰/검은) 여백에 '예시 워터마크'들이 있고, 나머지 이미지의 그림 위에 같은 마크가 박혀 있다.
-1단계(예시 마크 찾기, 모든 이미지에서): rule = s1_rule.py(규칙 v5), neural = s1 U-Net, hybrid(기본) = 규칙 후보 중 U-Net 마스크가 상자의 25% 이상을 예시로 본 것만.
-2단계(그림 위에서 찾기, 예시마다 모든 이미지에서): 참조형 U-Net 확률 지도 → 상자. 예시와 크기·가로세로비(0.6~1.75배)가 다른 상자, 면적 > 화면 20% 상자, 예시 자리 자체는 제외.
-합의(--consensus T): 신경망 상자 중 같은 자리에서 템플릿 매칭(s2_tm.py, 마스크 정규화 상관 ≥ T, 크기 0.7~1.46배 14단계)도 확인한 것만 남긴다(말풍선·머리·눈 오검출 제거).
-반복 확인(--vmin, 기본 1): 예시가 자기 페이지 밖의 이미지 vmin 장 이상에서 발견될 때만 채택.
-출력: 결과폴더/result.json (examples, detections), 결과폴더/<이미지>_det.png (상자·예시 번호)."""
+1단계(예시 마크 찾기, 모든 이미지에서): rule = s1_rule.py(규칙 v5), neural = 1단계 U-Net(--s1net), hybrid = 규칙 후보 중 U-Net 마스크가 상자의 25% 이상을 예시로 본 것만.
+2단계(그림 위에서 찾기, 예시마다 모든 이미지에서):
+  kp(기본) = s2_kp.py: 예시의 SIFT 특징점을 그림 위와 맞춰 RANSAC 닮음변환(크기·회전·위치)을 구함. 인라이어 --kp-min(기본 6) 이상이면 검출.
+  nn = 참조형 U-Net(--s2net) 상자. --consensus N: 신경망 상자 중 같은 자리에서 특징점 매칭(인라이어 ≥ N)도 확인한 것만 남김, --also-kp M: 신경망이 못 본 곳을 특징점 매칭(인라이어 ≥ M)이 보강.
+예시와 크기·가로세로비(0.6~1.75배)가 다른 상자, 면적 > 화면 20% 상자, 예시 자리 자체는 제외. 반복 확인(--vmin, 기본 1): 예시가 자기 페이지 밖의 이미지 vmin 장 이상에서 발견될 때만 채택.
+출력: 결과폴더/result.json (examples, detections), 결과폴더/<이미지>_det.png."""
 import os, sys, json, glob, argparse, time
 import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
-import onnxruntime as ort
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import s1_rule, s2_tm
+import s1_rule, s2_kp
 
 RH, RW = 112, 192
 MAX_AREA = .20
@@ -27,7 +28,6 @@ def iou(a, b):
 
 
 def half_pad(img):
-    """0.5배 BOX 축소 + 16배수 reflect 패딩 → [1,3,h,w] float32 0..1"""
     W, H = img.size; w, h = W // 2, H // 2
     a = np.asarray(img.resize((w, h), Image.BOX), np.float32) / 255
     return np.pad(a, ((0, (-h) % 16), (0, (-w) % 16), (0, 0)), mode='reflect').transpose(2, 0, 1)[None].copy()
@@ -65,7 +65,6 @@ def page_bg(arr, b):
 
 
 def make_ref(arr, box, bg):
-    """예시 조각 → [1,3,112,192] 캔버스(0.5배 축소, 배경색으로 채움)"""
     x, y, w, h = box; crop = Image.fromarray(arr[y:y + h, x:x + w]); nw, nh = max(4, w // 2), max(4, h // 2)
     a = np.asarray(crop.resize((nw, nh), Image.BOX), np.float32) / 255; f = min(1., (RW - 8) / nw, (RH - 8) / nh)
     if f < 1: nh, nw = max(4, int(nh * f)), max(4, int(nw * f)); a = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).resize((nw, nh), Image.BOX), np.float32) / 255
@@ -74,14 +73,16 @@ def make_ref(arr, box, bg):
 
 
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('inputs', nargs='+'); ap.add_argument('--s1net'); ap.add_argument('--s2net', required=True); ap.add_argument('--s1', default='hybrid', choices=['hybrid', 'rule', 'neural'])
-    ap.add_argument('--consensus', type=float, default=.5); ap.add_argument('--also-tm', type=float, default=0.0); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--out', default='pipe_out')
+    ap = argparse.ArgumentParser(); ap.add_argument('inputs', nargs='+'); ap.add_argument('--s1net'); ap.add_argument('--s2net'); ap.add_argument('--s1', default='rule', choices=['hybrid', 'rule', 'neural']); ap.add_argument('--s2', default='kp', choices=['kp', 'nn'])
+    ap.add_argument('--kp-min', type=int, default=6); ap.add_argument('--consensus', type=int, default=0); ap.add_argument('--also-kp', type=int, default=0); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--out', default='pipe_out')
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
     files = []
     for p in a.inputs: files += sorted(glob.glob(os.path.join(p, '*'))) if os.path.isdir(p) else [p]
     files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')) and not os.path.basename(f).lower().startswith('gallery')]
-    sess1 = ort.InferenceSession(a.s1net, providers=['CPUExecutionProvider']) if a.s1 != 'rule' else None; sess2 = ort.InferenceSession(a.s2net, providers=['CPUExecutionProvider'])
-    pages = [Image.open(f).convert('RGB') for f in files]; arrs = [np.asarray(p) for p in pages]; halves = [half_pad(p) for p in pages]; grays = [s2_tm._gray(np.asarray(p.resize((p.width // 2, p.height // 2), Image.BOX), np.float32)) for p in pages]
+    ort = None
+    if a.s1 != 'rule' or a.s2 == 'nn': import onnxruntime as ort
+    sess1 = ort.InferenceSession(a.s1net, providers=['CPUExecutionProvider']) if a.s1 != 'rule' else None; sess2 = ort.InferenceSession(a.s2net, providers=['CPUExecutionProvider']) if a.s2 == 'nn' else None
+    pages = [Image.open(f).convert('RGB') for f in files]; arrs = [np.asarray(p) for p in pages]; reps = [s2_kp.page_repr(p) for p in pages]; halves = [half_pad(p) for p in pages] if a.s2 == 'nn' else None
     t0 = time.time(); cands = []
     for pi, pil in enumerate(pages):
         for b in stage1(pil, a.s1, sess1): cands.append((pi, [int(v) for v in b[:4]]))
@@ -89,14 +90,17 @@ def main():
     dets = []; accepted = []
     for ci, (pi, b) in enumerate(cands):
         arr = arrs[pi]; pad = 4; x0, y0 = max(0, b[0] - pad), max(0, b[1] - pad); w, h = min(arr.shape[1] - x0, b[2] + 2 * pad), min(arr.shape[0] - y0, b[3] + 2 * pad); bgv = page_bg(arr, b)
-        rf = make_ref(arr, (x0, y0, w, h), bgv); tpl, msk = s2_tm.prepare(arr[y0:y0 + h, x0:x0 + w], bgv) if (a.consensus > 0 or a.also_tm > 0) else (None, None); res = []
+        tpl, msk = s2_kp.prepare(arr[y0:y0 + h, x0:x0 + w], bgv); rf = make_ref(arr, (x0, y0, w, h), bgv) if a.s2 == 'nn' else None; res = []
         for pj, pil in enumerate(pages):
-            W, H = pil.size; p = sigmoid(sess2.run(None, {'image': halves[pj], 'ref': rf})[0][0, 0]); found = [bb + ('nn',) for bb in boxes_from_prob(p, a.th)]
-            if a.consensus > 0:
-                tmk = s2_tm.match(grays[pj], tpl, msk, thr=a.consensus); found = [f for f in found if any(iou(f, t) >= .2 for t in tmk)]
-            if a.also_tm > 0:
-                for tb in s2_tm.match(grays[pj], tpl, msk, thr=a.also_tm):
-                    if all(iou(tb, f) < .3 for f in found): found.append((tb[0], tb[1], tb[2], tb[3], tb[4], 'tm'))
+            W, H = pil.size
+            if a.s2 == 'kp': found = [bb + ('kp',) for bb in s2_kp.match(reps[pj], tpl, msk, thr=a.kp_min)]
+            else:
+                p = sigmoid(sess2.run(None, {'image': halves[pj], 'ref': rf})[0][0, 0]); found = [bb + ('nn',) for bb in boxes_from_prob(p, a.th)]
+                if a.consensus > 0:
+                    kpk = s2_kp.match(reps[pj], tpl, msk, thr=a.consensus); found = [f for f in found if any(iou(f, t) >= .2 for t in kpk)]
+                if a.also_kp > 0:
+                    for tb in s2_kp.match(reps[pj], tpl, msk, thr=a.also_kp):
+                        if all(iou(tb, f) < .3 for f in found): found.append((tb[0], tb[1], tb[2], tb[3], tb[4], 'kp'))
             for bb in found:
                 if bb[2] * bb[3] > MAX_AREA * W * H: continue
                 if not (.6 * b[2] <= bb[2] <= 1.75 * b[2] and .6 * b[3] <= bb[3] <= 1.75 * b[3]): continue
