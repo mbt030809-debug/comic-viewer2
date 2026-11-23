@@ -1,0 +1,65 @@
+{
+ "settings": {
+  "inputs": [
+   "C:\\wm2work\\refdata3\\core\\ref3_core_002"
+  ],
+  "s1net": "C:\\wm2work\\export\\pc20261124\\wm2_s1_unet_10k_20261124.onnx",
+  "s2net": "C:\\wm2work\\export\\pc20261124\\wm2_ref_unet_25k_20261124.onnx",
+  "s1": "hybrid",
+  "consensus": 0.5,
+  "also_tm": 0.0,
+  "vmin": 1,
+  "th": 0.5,
+  "out": "C:\\wm2work\\export\\pc20261124\\sample\\ref3_core_002\\expected_out"
+ },
+ "examples": [
+  {
+   "id": 0,
+   "image": "img_06.png",
+   "box": [
+    328,
+    1240,
+    64,
+    64
+   ]
+  }
+ ],
+ "detections": [
+  {
+   "image": "img_04.png",
+   "example": 0,
+   "box": [
+    40,
+    1292,
+    72,
+    72
+   ],
+   "score": 0.994,
+   "by": "nn"
+  },
+  {
+   "image": "img_07.png",
+   "example": 0,
+   "box": [
+    542,
+    414,
+    84,
+    82
+   ],
+   "score": 0.989,
+   "by": "nn"
+  },
+  {
+   "image": "img_07.png",
+   "example": 0,
+   "box": [
+    60,
+    1590,
+    64,
+    64
+   ],
+   "score": 0.986,
+   "by": "nn"
+  }
+ ]
+}
