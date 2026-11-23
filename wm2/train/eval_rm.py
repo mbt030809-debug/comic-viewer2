@@ -30,7 +30,7 @@ def run_tiles(net, dev, img, m, T=512, mg=32):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('ckpt'); ap.add_argument('--bench', required=True); ap.add_argument('--tiers', default='core,wild'); ap.add_argument('--tag', default='rm'); ap.add_argument('--out'); ap.add_argument('--device', default='dml')
-    ap.add_argument('--max-sites', type=int, default=0); ap.add_argument('--mdil', type=int, default=3); ap.add_argument('--thr', type=int, default=8); ap.add_argument('--tsvdir')
+    ap.add_argument('--max-sites', type=int, default=0); ap.add_argument('--mdil', type=int, default=3); ap.add_argument('--thr', type=int, default=8); ap.add_argument('--scale', type=float, default=1.0); ap.add_argument('--mode', default='native', choices=['native', 'half_resid']); ap.add_argument('--tsvdir')
     a = ap.parse_args(); dev = get_device(a.device)
     d = torch.load(a.ckpt, map_location='cpu', weights_only=True); net = RmUNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
     params = sum(p.numel() for p in net.parameters())
@@ -47,10 +47,21 @@ def main():
                 if not os.path.exists(cp): continue
                 img = np.asarray(Image.open(os.path.join(sd, f)).convert('RGB'), np.float32) / 255; cl = np.asarray(Image.open(cp).convert('RGB'), np.float32) / 255
                 if img.shape != cl.shape: continue
+                if a.scale != 1:   # 학습이 0.5배 세계(폭 360)라 같은 크기로 줄여서 평가(--scale 0.5)
+                    h2, w2 = int(img.shape[0] * a.scale), int(img.shape[1] * a.scale)
+                    img = np.asarray(Image.fromarray((img * 255).astype(np.uint8)).resize((w2, h2), Image.BOX), np.float32) / 255; cl = np.asarray(Image.fromarray((cl * 255).astype(np.uint8)).resize((w2, h2), Image.BOX), np.float32) / 255
                 gt = (np.abs(img - cl).max(2) * 255 >= a.thr)
                 if gt.sum() < 20: continue
                 mi = np.asarray(Image.fromarray(gt.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(2 * a.mdil + 1)), np.float32) / 255
-                out = run_tiles(net, dev, img, mi); g = gt[..., None]
+                if a.mode == 'half_resid':   # 0.5배에서 제거 → 변화량(잔차)만 원본 크기로 키워 원본에 더함(원본 해상도 보존)
+                    H0, W0 = img.shape[:2]; im8 = lambda x: Image.fromarray((np.clip(x, 0, 1) * 255).astype(np.uint8))
+                    ih = np.asarray(im8(img).resize((W0 // 2, H0 // 2), Image.BOX), np.float32) / 255
+                    mh = (np.asarray(Image.fromarray((mi * 255).astype(np.uint8)).resize((W0 // 2, H0 // 2), Image.BILINEAR), np.float32) / 255 > .3).astype(np.float32)
+                    oh = run_tiles(net, dev, ih, mh); dl = oh - ih
+                    df = np.stack([np.asarray(Image.fromarray(dl[..., c].astype(np.float32), 'F').resize((W0, H0), Image.BICUBIC)) for c in range(3)], -1)
+                    out = np.clip(img + df * mi[..., None], 0, 1)
+                else: out = run_tiles(net, dev, img, mi)
+                g = gt[..., None]
                 e0s += float((np.abs(img - cl) * g).sum()); e1s += float((np.abs(out - cl) * g).sum()); n += float(g.sum() * 3)
                 m0 += float((((img - cl) ** 2) * g).sum()); m1 += float((((out - cl) ** 2) * g).sum()); nimg += 1
             if n == 0: continue
