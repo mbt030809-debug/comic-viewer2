@@ -25,15 +25,15 @@ def page_bg(arr, b):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--bench', required=True); ap.add_argument('--tiers', default='core,val'); ap.add_argument('--s1', required=True); ap.add_argument('--s2', required=True); ap.add_argument('--tag', default='pipe')
-    ap.add_argument('--out'); ap.add_argument('--device', default='dml'); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--max-sets', type=int, default=0); ap.add_argument('--sizefilt', type=int, default=1); ap.add_argument('--consensus', type=float, default=0.0); ap.add_argument('--also-tm', type=float, default=0.0)   # >0: 신경망 상자에 템플릿 매칭(상관 ≥ 이 값) 상자를 합침(불투명 마크 보강)
+    ap.add_argument('--out'); ap.add_argument('--device', default='dml'); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--max-sets', type=int, default=0); ap.add_argument('--sizefilt', type=int, default=1); ap.add_argument('--aux', default='tm', choices=['tm', 'kp', 'xf']); ap.add_argument('--consensus', type=float, default=0.0); ap.add_argument('--also-tm', type=float, default=0.0)   # >0: 신경망 상자에 템플릿 매칭(상관 ≥ 이 값) 상자를 합침(불투명 마크 보강)
     a = ap.parse_args(); dev = get_device(a.device)
-    use_tm = a.s2.startswith('tm')   # 2단계 규칙 기반(템플릿 매칭): --s2 tm 또는 tm:0.6(문턱)
+    use_tm = a.s2.startswith(('tm', 'kp', 'xf'))   # 2단계 규칙 기반(템플릿 매칭): --s2 tm 또는 tm:0.6(문턱)
     if use_tm:
-        import s2_tm; tm_thr = float(a.s2.partition(':')[2] or .55); net = None
+        s2m = __import__({'kp': 's2_kp', 'xf': 's2_xf'}.get(a.s2[:2], 's2_tm')); tm_thr = float(a.s2.partition(':')[2] or (10 if a.s2[:2] in ('kp', 'xf') else .55)); net = None
     else:
         d = torch.load(a.s2, map_location='cpu', weights_only=True); net = RefUNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
     a.use_tmx = (a.also_tm > 0 or a.consensus > 0) and not use_tm   # 신경망 2단계에 템플릿 매칭을 보태 쓰는 모드(보강/합의)
-    if a.use_tmx: import s2_tm
+    if a.use_tmx: s2m = __import__({'kp': 's2_kp', 'xf': 's2_xf'}.get(a.aux, 's2_tm'))   # --aux kp: 합의·보강에 특징점 매칭(문턱 = 최소 인라이어 수)을 사용
     s1 = None if a.s1 == 'oracle' else load_method(a.s1, a.device)
     for tier in a.tiers.split(','):
         root = os.path.join(a.bench, tier); truth = json.load(open(os.path.join(root, 'truth.json'), encoding='utf-8')); sets = truth['sets'][:a.max_sets] if a.max_sets else truth['sets']
@@ -50,22 +50,22 @@ def main():
                     cands.append((pi, [int(v) for v in b[:4]], tidx))
             T['cands'] += len(cands); T['cands_true'] += sum(1 for c in cands if c[2] >= 0)
             tens = [target_tensor(os.path.join(sd, im['file'])) for im in s['images']]
-            if use_tm or a.use_tmx: grays = [s2_tm._gray(np.asarray(p.resize((p.width // 2, p.height // 2), Image.BOX), np.float32)) for p in pages]
+            if use_tm or a.use_tmx: grays = [s2m.page_repr(p) for p in pages]
             hits = []   # 후보별 [(page, box, score)]
             for ci, (pi, b, tidx) in enumerate(cands):
                 arr = arrs[pi]; pad = 4; x0, y0 = max(0, b[0] - pad), max(0, b[1] - pad); w, h = min(arr.shape[1] - x0, b[2] + 2 * pad), min(arr.shape[0] - y0, b[3] + 2 * pad)
                 bgv = page_bg(arr, b); res = []
-                if use_tm or a.use_tmx: tpl, msk = s2_tm.prepare(arr[y0:y0 + h, x0:x0 + w], bgv)
+                if use_tm or a.use_tmx: tpl, msk = s2m.prepare(arr[y0:y0 + h, x0:x0 + w], bgv)
                 if not use_tm: rf = make_ref(arr, (x0, y0, w, h, bgv)).to(dev)
                 for pj, (x, W, H) in enumerate(tens):
-                    if use_tm: found = s2_tm.match(grays[pj], tpl, msk, thr=tm_thr)
+                    if use_tm: found = s2m.match(grays[pj], tpl, msk, thr=tm_thr)
                     else:
                         with torch.no_grad(): p = torch.sigmoid(net(x.to(dev), rf))[0, 0].cpu().numpy()
                         found = [bb[:5] + (bb[5],) for bb in boxes_from_mask(p, W, H, th=a.th, tile_frac=2.0)]
                         if a.consensus > 0:   # 합의: 신경망 상자 중 템플릿 매칭(상관 ≥ consensus)이 같은 자리에서 확인한 것만 남김(캡션·말풍선 등 모양이 다른 오검출 제거)
-                            tmk = s2_tm.match(grays[pj], tpl, msk, thr=a.consensus); found = [f for f in found if any(iou(f, t) >= .2 for t in tmk)]
+                            tmk = s2m.match(grays[pj], tpl, msk, thr=a.consensus); found = [f for f in found if any(iou(f, t) >= .2 for t in tmk)]
                         if a.also_tm > 0:   # 신경망이 못 본 곳을 템플릿 매칭이 높은 상관으로 보강(겹치면 신경망 상자 유지)
-                            for tb in s2_tm.match(grays[pj], tpl, msk, thr=a.also_tm):
+                            for tb in s2m.match(grays[pj], tpl, msk, thr=a.also_tm):
                                 if all(iou(tb, fb) < .3 for fb in found): found.append((tb[0], tb[1], tb[2], tb[3], 'tm', tb[4]))
                     for bb in found:
                         if bb[2] * bb[3] > .2 * W * H: continue
@@ -102,4 +102,7 @@ def main():
 
 
 if __name__ == '__main__': main()
+
+
+
 

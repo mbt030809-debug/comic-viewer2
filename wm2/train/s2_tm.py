@@ -12,6 +12,11 @@ SCALES = (.7, .75, .8, .86, .92, .96, 1.0, 1.05, 1.1, 1.16, 1.22, 1.3, 1.38, 1.4
 def _gray(a): return (a[..., 0] * .299 + a[..., 1] * .587 + a[..., 2] * .114).astype(np.float32)
 
 
+def page_repr(pil):
+    from PIL import Image as _I
+    return _gray(np.asarray(pil.resize((pil.width // 2, pil.height // 2), _I.BOX), np.float32))
+
+
 def prepare(crop_rgb, bg):
     """예시 조각(uint8 RGB, 원본 해상도) → (0.5배 회색 템플릿, 마스크)"""
     h, w = crop_rgb.shape[:2]; im = Image.fromarray(crop_rgb); sm = im.resize((max(4, w // 2), max(4, h // 2)), Image.BOX); g = _gray(np.asarray(sm, np.float32))
@@ -47,4 +52,5 @@ def match(page_gray_half, tpl, mask, thr=.55, scales=SCALES, max_area=.2):
             if ix * iy > .4 * min(b[2] * b[3], k_[2] * k_[3]): ok = False; break
         if ok: keep.append(b)
     return keep
+
 
