@@ -30,8 +30,13 @@ def put2(img, spr, r, S, alpha, fr=(.75, 1.33)):
     return V1.put(img, spr, r, S, alpha, fr=(f, f))
 
 
+class SynthRef3Mixin:
+    pass
+
+
 class SynthRef2(SynthRef):
     P_MANGA = .6
+    P_OPAQUE = 0.0
 
     def _load(self):
         super()._load(); ex = ensure_chars(self.root); self.small = list(self.small) + ex
@@ -48,7 +53,7 @@ class SynthRef2(SynthRef):
         while True:
             spr = self.small[int(r.integers(len(self.small)))]; ref, _ = make_ref(spr, r)
             if ref is not None: break
-        al = lambda: float(np.exp(r.uniform(np.log(.12), np.log(.7))))
+        al = lambda: 1.0 if r.random() < self.P_OPAQUE else float(np.exp(r.uniform(np.log(.12), np.log(.7))))   # 불투명 비율(v3: 60%)
         u = r.random()
         if u < .55:
             for _ in range(1 + (r.random() < .25)):
