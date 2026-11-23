@@ -14,9 +14,15 @@ import kotlin.math.min
  */
 class Wm2Pipeline(private val codec: WmCodec) {
     class Analysis(val confirmed: List<Wm2Detector.Box>, val p: FloatArray, val w2: Int, val h2: Int)
-    @Volatile private var refs: List<FloatArray> = emptyList()   // 이 페이지의 예시 마크(갤러리 위→아래 순서)
-    @Volatile private var refsKey = 0L
-    val refCount: Int get() = refs.size
+    /** 예시 마크 하나: 모델 입력(ref)과 원래 크기(w,h). 인식된 상자는 이 크기의 0.6~1.75배 안이어야 함 */
+    class Example(val ref: FloatArray, val w: Int, val h: Int)
+    private val exLock = Any()
+    @Volatile private var examples: List<Example> = emptyList()   // 이 페이지의 예시 마크
+    @Volatile private var fromGallery = false                    // 갤러리 이미지에서 얻은 예시가 있으면 여백 탐색은 하지 않음
+    private var galleryKey = 0L
+    private val s1Done = HashMap<Long, List<IntArray>>()         // 이미지 → 1단계 후보(여백에서 찾은 예시 후보 상자). 같은 이미지를 다시 받아도 다시 계산하지 않음
+    val refCount: Int get() = examples.size
+    @Volatile var stage1: Wm2Stage1? = null                      // 1단계 신경망(없으면 여백 예시 탐색 안 함)
 
     @Volatile var detector: Wm2Detector? = null      // 모델이 준비되기 전에는 아무것도 하지 않음
     @Volatile var erase = true                       // 확정된 워터마크 지우기
@@ -33,7 +39,7 @@ class Wm2Pipeline(private val codec: WmCodec) {
     fun wants(): Boolean = detector != null && (erase || showBoxes)
     /** 지금 설정으로 만든 결과를 구분하는 값(지우기·표시 조합). 캐시 키에 넣어 다른 설정으로 만든 이미지가 섞이지 않게 함 */
     fun flagsKey(): Int = (if (erase) 1 else 0) or (if (showBoxes) 2 else 0)
-    fun onPage() { confirmer.reset(); refs = emptyList(); refsKey = 0L }
+    fun onPage() { confirmer.reset(); synchronized(exLock) { examples = emptyList(); fromGallery = false; galleryKey = 0L; s1Done.clear() } }
     fun forget() = onPage()
 
     private fun note(t: String) { synchronized(log) { log.add(t); if (log.size > 60) log.removeAt(0) }; try { logSink?.invoke(t) } catch (_: Throwable) { } }
@@ -41,10 +47,10 @@ class Wm2Pipeline(private val codec: WmCodec) {
         val flags = "[엔진 상태] 지우기 ${if (erase) "켜짐" else "꺼짐"} · 위치 표시 ${if (showBoxes) "켜짐" else "꺼짐"}\n"
         return flags + when {
             detector == null -> "모델 준비 중"
-            refs.isEmpty() -> "예시 마크 기다리는 중(흰/검정 배경의 원본 워터마크 이미지가 나오면 시작) · 검사 ${seen}장"
+            examples.isEmpty() -> "예시 마크 기다리는 중(흰/검정 여백에 원본 워터마크가 있는 이미지가 나오면 시작) · 검사 ${seen}장"
             !erase && !showBoxes -> "꺼짐"
-            confirmer.everConfirmed -> "예시 ${refs.size}개 · 워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
-            else -> "예시 ${refs.size}개 · 찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
+            confirmer.everConfirmed -> "예시 ${examples.size}개 · 워터마크 확정 · 처리 ${changed}장 · 검사 ${seen}장 · ${lastMs}ms/장"
+            else -> "예시 ${examples.size}개 · 찾는 중 · 검사 ${seen}장(같은 너비 ${confirmer.size}장, 3장 이상이면 판정) · ${lastMs}ms/장"
         }
     }
     fun diag(): String = synchronized(log) { log.takeLast(12).joinToString("\n") }
@@ -58,26 +64,50 @@ class Wm2Pipeline(private val codec: WmCodec) {
         if (w < 350 || h < 100 || w > 4000 || h > 30000 || w.toLong() * h > 16_000_000L || w.toFloat() / h > 8f) return null
         val t0 = System.currentTimeMillis()
         val img = codec.small(bytes, 1) ?: run { lastErr = "디코드 실패"; return null }
+        val key = bytes.size * 31L + bytes.contentHashCode()
         // 갤러리(예시 마크 이미지)면 예시로 저장하고 이 장은 건드리지 않음
         val g = Wm2Gallery.find(img)
         if (g != null) {
-            val key = bytes.size * 31L + bytes.contentHashCode()
-            if (key != refsKey) {
-                refs = g.map { Wm2Gallery.makeRef(img, it) }; refsKey = key
-                note("예시 마크 ${g.size}개 확보 (${w}x$h)")
-                try { onConfirmed?.invoke() } catch (_: Throwable) { }
+            var fire = false
+            synchronized(exLock) {
+                if (key != galleryKey) {
+                    examples = g.map { Example(Wm2Gallery.makeRef(img, it), it.w, it.h) }; galleryKey = key; fromGallery = true; fire = true
+                    note("예시 마크 ${g.size}개 확보: 갤러리 ${w}x$h")
+                }
             }
+            if (fire) try { onConfirmed?.invoke() } catch (_: Throwable) { }
             return null
         }
-        val rs = refs
-        if (rs.isEmpty()) { seen++; return null }
-        val d = det.detect(img, rs)
-        val boxes = d.boxes
+        // 1단계: 갤러리가 없으면 이미지 속 단색 여백에서 예시 후보를 찾는다(찾은 후보는 예시로 등록, 그 자리는 인식에서 제외)
+        val cands = if (fromGallery) emptyList() else stage1Candidates(key, img, w, h)
+        val ex = examples
+        if (ex.isEmpty()) { seen++; return null }
+        val d = det.detect(img, ex.map { it.ref }, ex.map { intArrayOf(it.w, it.h) })
+        val boxes = d.boxes.filter { b -> cands.none { c -> Wm2Detector.iou(b, Wm2Detector.Box(c[0], c[1], c[2], c[3], false, 0f)) > 0.3f } }
         lastMs = System.currentTimeMillis() - t0; seen++
-        val r = confirmer.confirm(bytes.size * 31L + bytes.contentHashCode(), w, h, boxes)
+        val r = confirmer.confirm(key, w, h, boxes)
         note("#$seen ${w}x$h 후보 ${boxes.size}개 · 비교 ${r.others}장" + (if (r.others < Wm2Confirmer.MIN_OTHERS) " → 판정 대기" else " → 확정 ${r.confirmed.size}개"))
         if (r.firstTime) try { onConfirmed?.invoke() } catch (_: Throwable) { }
         return Analysis(r.confirmed, d.p, d.w2, d.h2)
+    }
+
+    /** 이미지의 단색 여백에서 예시 후보를 찾아 돌려주고(규칙 → 신경망으로 거름), 처음 보는 이미지면 후보를 예시로 등록한다 */
+    private fun stage1Candidates(key: Long, img: com.example.comicviewer.WmImg, w: Int, h: Int): List<IntArray> {
+        synchronized(exLock) { s1Done[key]?.let { return it } }
+        val s1 = stage1 ?: return emptyList()
+        val rule = Wm2Examples.find(img)
+        val c = if (rule.isEmpty()) emptyList() else s1.filter(s1.mask(img), rule)
+        var fire = false
+        synchronized(exLock) {
+            if (s1Done.containsKey(key)) return s1Done[key]!!
+            s1Done[key] = c
+            if (c.isNotEmpty() && !fromGallery) {
+                val add = c.take(MAX_EXAMPLES - examples.size).map { Example(Wm2Examples.makeRef(img, it), it[2], it[3]) }
+                if (add.isNotEmpty()) { examples = examples + add; fire = true; note("예시 후보 ${add.size}개 등록: 여백 ${w}x$h → 예시 ${examples.size}개") }
+            }
+        }
+        if (fire) try { onConfirmed?.invoke() } catch (_: Throwable) { }
+        return c
     }
 
     /** 이미지 한 장 처리. 바뀐 바이트를 돌려주고, 확정 전이거나 바꿀 게 없으면 null(원본 그대로) */
@@ -103,4 +133,6 @@ class Wm2Pipeline(private val codec: WmCodec) {
         fill(x0, y0, x1 - x0, min(t, y1 - y0)); fill(x0, max(y0, y1 - t), x1 - x0, min(t, y1 - y0))
         fill(x0, y0, min(t, x1 - x0), y1 - y0); fill(max(x0, x1 - t), y0, min(t, x1 - x0), y1 - y0)
     }
+
+    companion object { const val MAX_EXAMPLES = 8 }
 }

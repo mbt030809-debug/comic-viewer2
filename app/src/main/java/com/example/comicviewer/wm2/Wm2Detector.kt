@@ -34,25 +34,7 @@ class Wm2Detector(model: ByteArray, threads: Int = 2) {
     /** 이미지 쪽 입력(예시와 무관하므로 한 번만 만들어 예시마다 재사용) */
     class Target(val data: FloatArray, val W: Int, val H: Int, val w2: Int, val h2: Int)
 
-    fun prepare(img: WmImg): Target {
-        val w2 = img.w / 2; val h2 = img.h / 2
-        val pw = (16 - w2 % 16) % 16; val ph = (16 - h2 % 16) % 16
-        val W = w2 + pw; val H = h2 + ph
-        val half = FloatArray(3 * w2 * h2)
-        val px = img.px; val iw = img.w
-        for (y in 0 until h2) for (x in 0 until w2) {
-            var r = 0; var g = 0; var b = 0
-            for (dy in 0..1) { val o = (2 * y + dy) * iw + 2 * x; for (dx in 0..1) { val p = px[o + dx]; r += p shr 16 and 255; g += p shr 8 and 255; b += p and 255 } }
-            val i = y * w2 + x
-            half[i] = r / 1020f; half[w2 * h2 + i] = g / 1020f; half[2 * w2 * h2 + i] = b / 1020f
-        }
-        val inp = FloatArray(3 * H * W)
-        for (c in 0 until 3) for (y in 0 until H) {
-            val sy = reflect(y, h2); val row = c * w2 * h2 + sy * w2; val o = c * H * W + y * W
-            for (x in 0 until W) inp[o + x] = half[row + reflect(x, w2)]
-        }
-        return Target(inp, W, H, w2, h2)
-    }
+    fun prepare(img: WmImg): Target = prepareImage(img)
 
     /** 이 예시 마크가 있을 확률 지도(0.5배 좌표, w2*h2) */
     fun probMap(t: Target, ref: FloatArray): FloatArray {
@@ -69,18 +51,19 @@ class Wm2Detector(model: ByteArray, threads: Int = 2) {
         }
     }
 
-    private fun reflect(i: Int, n: Int) = if (i < n) i else 2 * (n - 1) - i
-
     /** 상자 목록 + 확률 지도(예시들의 최댓값, 0.5배 좌표. 지우기가 마스크로 씀) */
     class Det(val boxes: List<Box>, val p: FloatArray, val w2: Int, val h2: Int)
 
-    fun detect(img: WmImg, refs: List<FloatArray>, th: Float = 0.5f): Det {
+    /** sizes[i] = i번 예시의 (폭, 높이). 상자가 예시의 0.6~1.75배(폭·높이 모두) 안일 때만 남김(머리카락·눈 조각 등 제외) */
+    fun detect(img: WmImg, refs: List<FloatArray>, sizes: List<IntArray>, th: Float = 0.5f): Det {
         val t = prepare(img)
         val all = ArrayList<Box>(); val pmax = FloatArray(t.w2 * t.h2)
         for ((i, ref) in refs.withIndex()) {
             val p = probMap(t, ref)
             for (k in p.indices) if (p[k] > pmax[k]) pmax[k] = p[k]
-            for (b in boxesFromMap(p, t.w2, t.h2, th, i)) if (b.w.toLong() * b.h <= MAX_AREA * img.w * img.h) all.add(b)
+            val sz = sizes[i]
+            for (b in boxesFromMap(p, t.w2, t.h2, th, i))
+                if (b.w.toLong() * b.h <= MAX_AREA * img.w * img.h && b.w >= 0.6f * sz[0] && b.w <= 1.75f * sz[0] && b.h >= 0.6f * sz[1] && b.h <= 1.75f * sz[1]) all.add(b)
         }
         return Det(dedupe(all), pmax, t.w2, t.h2)
     }
@@ -91,13 +74,36 @@ class Wm2Detector(model: ByteArray, threads: Int = 2) {
         for (b in bs.sortedByDescending { it.score }) if (out.none { iou(it, b) >= 0.5f }) out.add(b)
         return out
     }
-    private fun iou(a: Box, b: Box): Float {
-        val ix = max(0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x)); val iy = max(0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
-        val i = ix.toLong() * iy; val u = a.w.toLong() * a.h + b.w.toLong() * b.h - i
-        return if (u > 0) i.toFloat() / u else 0f
-    }
 
     companion object {
+        fun iou(a: Box, b: Box): Float {
+            val ix = max(0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x)); val iy = max(0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
+            val i = ix.toLong() * iy; val u = a.w.toLong() * a.h + b.w.toLong() * b.h - i
+            return if (u > 0) i.toFloat() / u else 0f
+        }
+
+        fun prepareImage(img: WmImg): Target {
+            val w2 = img.w / 2; val h2 = img.h / 2
+            val pw = (16 - w2 % 16) % 16; val ph = (16 - h2 % 16) % 16
+            val W = w2 + pw; val H = h2 + ph
+            val half = FloatArray(3 * w2 * h2)
+            val px = img.px; val iw = img.w
+            for (y in 0 until h2) for (x in 0 until w2) {
+                var r = 0; var g = 0; var b = 0
+                for (dy in 0..1) { val o = (2 * y + dy) * iw + 2 * x; for (dx in 0..1) { val p = px[o + dx]; r += p shr 16 and 255; g += p shr 8 and 255; b += p and 255 } }
+                val i = y * w2 + x
+                half[i] = r / 1020f; half[w2 * h2 + i] = g / 1020f; half[2 * w2 * h2 + i] = b / 1020f
+            }
+            val inp = FloatArray(3 * H * W)
+            for (c in 0 until 3) for (y in 0 until H) {
+                val sy = reflect(y, h2); val row = c * w2 * h2 + sy * w2; val o = c * H * W + y * W
+                for (x in 0 until W) inp[o + x] = half[row + reflect(x, w2)]
+            }
+            return Target(inp, W, H, w2, h2)
+        }
+
+        fun reflect(i: Int, n: Int) = if (i < n) i else 2 * (n - 1) - i
+
         const val MERGE = 6          // 팽창 칸 수(0.5배 좌표)
         const val MIN_AREA = 30
         const val MAX_AREA = 0.20f   // 상자 면적 / 화면 면적 상한
@@ -132,5 +138,39 @@ class Wm2Detector(model: ByteArray, threads: Int = 2) {
             }
             return out
         }
+    }
+}
+
+/** 1단계 신경망(assets/wm2_s1_unet.onnx): 이미지에서 "단색 여백 안의 예시 마크" 픽셀 확률. 전처리는 Wm2Detector 와 같다(0.5배 평균 + 16배수 reflect) */
+class Wm2Stage1(model: ByteArray, threads: Int = 2) {
+    private val env = OrtEnvironment.getEnvironment()
+    private val session: OrtSession
+
+    init {
+        val o = OrtSession.SessionOptions(); o.setIntraOpNumThreads(threads)
+        session = env.createSession(model, o)
+    }
+
+    class Mask(val p: FloatArray, val w2: Int, val h2: Int)
+
+    fun mask(img: WmImg): Mask {
+        val t = Wm2Detector.prepareImage(img)
+        OnnxTensor.createTensor(env, FloatBuffer.wrap(t.data), longArrayOf(1, 3, t.H.toLong(), t.W.toLong())).use { ti ->
+            session.run(mapOf("image" to ti)).use { r ->
+                val fb = (r[0] as OnnxTensor).floatBuffer
+                val lo = FloatArray(fb.remaining()); fb.get(lo)
+                val p = FloatArray(t.w2 * t.h2)
+                for (y in 0 until t.h2) for (x in 0 until t.w2) p[y * t.w2 + x] = 1f / (1f + exp(-lo[y * t.W + x]))
+                return Mask(p, t.w2, t.h2)
+            }
+        }
+    }
+
+    /** 규칙 후보 중 신경망이 상자의 25% 이상을 예시로 본 것만 남긴다(hybrid) */
+    fun filter(m: Mask, cands: List<IntArray>): List<IntArray> = cands.filter { b ->
+        val x0 = b[0] / 2; val x1 = min(m.w2, (b[0] + b[2]) / 2 + 1); val y0 = b[1] / 2; val y1 = min(m.h2, (b[1] + b[3]) / 2 + 1)
+        var c = 0; var n = 0
+        for (y in y0 until y1) for (x in x0 until x1) { n++; if (m.p[y * m.w2 + x] > 0.5f) c++ }
+        n > 0 && c.toFloat() / n >= 0.25f
     }
 }

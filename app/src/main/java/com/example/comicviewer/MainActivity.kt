@@ -101,6 +101,8 @@ class MainActivity : Activity() {
         Thread {
             try { wm.engine.detector = com.example.comicviewer.wm2.Wm2Detector(assets.open("wm2_ref_unet.onnx").use { it.readBytes() }, 2) }
             catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 모델 로드 실패: $t") }
+            try { wm.engine.stage1 = com.example.comicviewer.wm2.Wm2Stage1(assets.open("wm2_s1_unet.onnx").use { it.readBytes() }, 2) }   // 여백에서 예시 찾는 1단계(실패해도 갤러리 이미지 방식은 동작)
+            catch (t: Throwable) { android.util.Log.d("WmDiag", "wm2 1단계 모델 로드 실패: $t") }
         }.also { it.isDaemon = true }.start()
         web = findViewById(R.id.web); urlInput = findViewById(R.id.urlInput)
         urlInput.setOnFocusChangeListener { _, has ->
