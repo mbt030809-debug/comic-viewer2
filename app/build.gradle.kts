@@ -11,7 +11,7 @@ android {
         targetSdk = 34
         versionCode = 132
         versionName = "2.07"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {
         getByName("debug") {
