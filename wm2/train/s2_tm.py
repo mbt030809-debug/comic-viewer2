@@ -1,4 +1,4 @@
-"""2단계 규칙 기반(b): 예시 마크를 템플릿으로 그림 위에서 찾는다(다중 크기 마스크 정규화 상관, 학습 없음).
+﻿"""2단계 규칙 기반(b): 예시 마크를 템플릿으로 그림 위에서 찾는다(다중 크기 마스크 정규화 상관, 학습 없음).
 예시 = 1단계가 준 상자(단색 배경 위 마크). 마크 픽셀(배경과 다른 곳)만 마스크로 쓰고, 0.5배 해상도 회색조에서 크기 0.75~1.33배를 돌며 상관을 구한다.
 정규화 상관은 밝기 변화·반투명 섞임(알파)에 어느 정도 강하지만, 회전·그림 질감이 심하면 약하다. 반환 [(x,y,w,h,score)] 원본 좌표."""
 import numpy as np
@@ -6,7 +6,7 @@ from PIL import Image
 from scipy import ndimage
 from scipy.signal import fftconvolve
 
-SCALES = (.72, .82, .92, 1.0, 1.1, 1.22, 1.38)   # 예시 대비 크기 비율 0.75~1.33 (+ 여유)
+SCALES = (.7, .75, .8, .86, .92, .96, 1.0, 1.05, 1.1, 1.16, 1.22, 1.3, 1.38, 1.46)   # 예시 대비 크기 비율 0.75~1.33 (+ 여유)
 
 
 def _gray(a): return (a[..., 0] * .299 + a[..., 1] * .587 + a[..., 2] * .114).astype(np.float32)
@@ -47,3 +47,4 @@ def match(page_gray_half, tpl, mask, thr=.55, scales=SCALES, max_area=.2):
             if ix * iy > .4 * min(b[2] * b[3], k_[2] * k_[3]): ok = False; break
         if ok: keep.append(b)
     return keep
+
