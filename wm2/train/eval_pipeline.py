@@ -25,9 +25,13 @@ def page_bg(arr, b):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--bench', required=True); ap.add_argument('--tiers', default='core,val'); ap.add_argument('--s1', required=True); ap.add_argument('--s2', required=True); ap.add_argument('--tag', default='pipe')
-    ap.add_argument('--out'); ap.add_argument('--device', default='dml'); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--max-sets', type=int, default=0)
+    ap.add_argument('--out'); ap.add_argument('--device', default='dml'); ap.add_argument('--vmin', type=int, default=1); ap.add_argument('--th', type=float, default=.5); ap.add_argument('--max-sets', type=int, default=0); ap.add_argument('--sizefilt', type=int, default=1)
     a = ap.parse_args(); dev = get_device(a.device)
-    d = torch.load(a.s2, map_location='cpu', weights_only=True); net = RefUNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
+    use_tm = a.s2.startswith('tm')   # 2단계 규칙 기반(템플릿 매칭): --s2 tm 또는 tm:0.6(문턱)
+    if use_tm:
+        import s2_tm; tm_thr = float(a.s2.partition(':')[2] or .55); net = None
+    else:
+        d = torch.load(a.s2, map_location='cpu', weights_only=True); net = RefUNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
     s1 = None if a.s1 == 'oracle' else load_method(a.s1, a.device)
     for tier in a.tiers.split(','):
         root = os.path.join(a.bench, tier); truth = json.load(open(os.path.join(root, 'truth.json'), encoding='utf-8')); sets = truth['sets'][:a.max_sets] if a.max_sets else truth['sets']
@@ -44,17 +48,24 @@ def main():
                     cands.append((pi, [int(v) for v in b[:4]], tidx))
             T['cands'] += len(cands); T['cands_true'] += sum(1 for c in cands if c[2] >= 0)
             tens = [target_tensor(os.path.join(sd, im['file'])) for im in s['images']]
+            if use_tm: grays = [s2_tm._gray(np.asarray(p.resize((p.width // 2, p.height // 2), Image.BOX), np.float32)) for p in pages]
             hits = []   # 후보별 [(page, box, score)]
             for ci, (pi, b, tidx) in enumerate(cands):
                 arr = arrs[pi]; pad = 4; x0, y0 = max(0, b[0] - pad), max(0, b[1] - pad); w, h = min(arr.shape[1] - x0, b[2] + 2 * pad), min(arr.shape[0] - y0, b[3] + 2 * pad)
-                rf = make_ref(arr, (x0, y0, w, h, page_bg(arr, b))).to(dev); res = []
+                bgv = page_bg(arr, b); res = []
+                if use_tm: tpl, msk = s2_tm.prepare(arr[y0:y0 + h, x0:x0 + w], bgv)
+                else: rf = make_ref(arr, (x0, y0, w, h, bgv)).to(dev)
                 for pj, (x, W, H) in enumerate(tens):
-                    with torch.no_grad(): p = torch.sigmoid(net(x.to(dev), rf))[0, 0].cpu().numpy()
-                    for bb in boxes_from_mask(p, W, H, th=a.th, tile_frac=2.0):
+                    if use_tm: found = s2_tm.match(grays[pj], tpl, msk, thr=tm_thr)
+                    else:
+                        with torch.no_grad(): p = torch.sigmoid(net(x.to(dev), rf))[0, 0].cpu().numpy()
+                        found = boxes_from_mask(p, W, H, th=a.th, tile_frac=2.0)
+                    for bb in found:
                         if bb[2] * bb[3] > .2 * W * H: continue
+                        if a.sizefilt and not (.6 * b[2] <= bb[2] <= 1.75 * b[2] and .6 * b[3] <= bb[3] <= 1.75 * b[3]): continue   # 예시와 크기·가로세로비가 많이 다른 상자(머리카락·눈 조각 등) 제외
                         if pj == pi and iou(bb, b) > .3: continue   # 후보 자신
                         if any(pj == cj and iou(bb, cb) > .3 for cj, cb, _ in cands): continue   # 다른 예시 자리
-                        res.append((pj, list(bb[:4]), bb[5]))
+                        res.append((pj, list(bb[:4]), bb[4] if use_tm else bb[5]))
                 hits.append(res)
             keep = [ci for ci, res in enumerate(hits) if len({r[0] for r in res if r[0] != cands[ci][0]}) >= a.vmin]
             T['accepted'] += len(keep); T['accepted_true'] += sum(1 for ci in keep if cands[ci][2] >= 0)

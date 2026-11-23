@@ -39,7 +39,22 @@ def load_method(spec, device):
                 if b[2] * b[3] <= .2 * W * H and b[2] >= .06 * W and b[3] >= 18: out.append((b[0], b[1], b[2], b[3], b[5]))   # 크기 사양(너무 작은 것·배경 전체 제외)
             return out
         return run
-    raise SystemExit('method: rule:N 또는 learned:<ckpt>')
+    if kind == 'hybrid':   # c: 규칙이 후보를 내고(rule:N), 신경망 마스크가 상자 안을 충분히 '예시 마크'로 보면 채택
+        import torch
+        import s1_rule
+        from model import UNet
+        from train import get_device
+        ver, _, ck = arg.partition(':'); dev = get_device(device); d = torch.load(ck, map_location='cpu', weights_only=True); net = UNet(tuple(d['ch'])); net.load_state_dict(d['sd']); net.to(dev).eval()
+        def run(img):
+            W, H = img.size; w, h = W // 2, H // 2; a = np.asarray(img.resize((w, h), Image.BOX), np.float32) / 255; a = np.pad(a, ((0, (-h) % 16), (0, (-w) % 16), (0, 0)), mode='reflect').transpose(2, 0, 1)[None].copy()
+            with torch.no_grad(): p = torch.sigmoid(net(torch.from_numpy(a).to(dev)))[0, 0].cpu().numpy()
+            out = []
+            for b in s1_rule.detect(np.asarray(img), int(ver)):
+                x0, y0, x1, y1 = b[0] // 2, b[1] // 2, (b[0] + b[2]) // 2 + 1, (b[1] + b[3]) // 2 + 1; reg = p[y0:y1, x0:x1]
+                if reg.size and (reg > .5).mean() >= .25: out.append((b[0], b[1], b[2], b[3], float(reg.mean())))
+            return out
+        return run
+    raise SystemExit('method: rule:N | learned:<ckpt> | hybrid:<ruleN>:<ckpt>')
 
 
 def evaluate(run, root, max_sets=0):

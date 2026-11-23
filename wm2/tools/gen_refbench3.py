@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """2단계 파이프라인 벤치 v3 (사용자 확정 사양, wm2/RECOGNITION_SPEC_20261123.md + 2026-11-23 추가 답변)
  1단계: 사이트 이미지(3~8장) 중 **어느 한 장(위치 모름)**의 **단색(흰/검은) 여백**에 '예시 워터마크'가 놓여 있다. 그 장은 일반 만화 페이지(컷 + 단색 여백 띠).
  2단계: 나머지 이미지의 웹툰 그림 위에 같은 마크가 박혀 있다 — **불투명(알파 1.0) 중심 60%, 반투명(0.15~0.7) 40%**. 위치·크기 매번 다름, 한 이미지에 여러 개, 일부 이미지엔 없음.
@@ -30,12 +30,22 @@ def make_band(sprs, kinds, rng, W=W0):
     groups = {0.: [], 255.: []}
     for i, s in enumerate(sprs):
         l = lum(s); bgv = 0. if l > 150 else 255. if l < 105 else (0. if rng.random() < .5 else 255.)
-        groups[bgv].append((i, s.scaled(scale_for(s.w, kinds[i], rng))))
+        ss = s.scaled(scale_for(s.w, kinds[i], rng)); groups[bgv].append((i, ss)); make_band.f1[i] = ss.w / s.w   # 예시 크기(원본 스프라이트 대비)
     bands = []; boxes = []; y = 0; bgs = []
     for bgv, items in groups.items():
         if not items: continue
         b, bx = _layout(items, bgv, rng, W); bands.append(b); boxes += [(i, [x0, y0 + y, w, h]) for i, (x0, y0, w, h) in bx]; y += b.shape[0]; bgs.append(bgv)
     return np.concatenate(bands, 0), boxes, bgs
+
+
+make_band.f1 = {}
+
+
+def embed_scale(w, kind, f1, rng):
+    """그림 위 마크 크기 = 예시 크기 × U(.75,1.33) (사양의 크기 범위로 자름) → 예시와의 비율이 학습 분포(0.75~1.33)와 같다"""
+    from gen_refbench2 import LOGO
+    lo, hi = (.08 * W0, .30 * W0) if kind in LOGO else (.10 * W0, .50 * W0)
+    return float(np.clip(f1 * rng.uniform(.75, 1.33), lo / w, hi / w))
 
 
 def _layout(items, bgv, rng, W=W0):
@@ -88,11 +98,11 @@ def gen_set(args):
     for m in range(M):
         if not any(p[m] for k, p in enumerate(pres) if k != ex_page): pres[rng.choice([k for k in range(K) if k != ex_page] or [0])][m] = True
     pres[ex_page] = [False] * M   # 예시 페이지에는 그림 위 마크를 두지 않는다(1단계 정답이 모호해지지 않게)
-    images = []
+    images = []; make_band.f1 = {}; band0, bx0, _bgs0 = make_band(sprs, kinds, rng); F1 = dict(make_band.f1)   # 예시 띠를 먼저 만들어 예시 크기(F1)를 정한다
     for k in range(K):
         H = rng.randint(1000, 2000); img = G.make_comic(seed * 100 + k, 720, H, style, hue); img = add_manga(img, rng); ex = []; decoys = []; reserved = []
         if k == ex_page:
-            band, bx, _bgs = make_band(sprs, kinds, rng); y = rng.randint(150, max(151, H - 150)); img, _ = insert_band(img, band, y); H = img.shape[0]
+            band, bx = band0, bx0; y = rng.randint(150, max(151, H - 150)); img, _ = insert_band(img, band, y); H = img.shape[0]
             ex = [dict(idx=i, box=[b[0], b[1] + y, b[2], b[3]]) for i, b in bx]; reserved.append([0, y, 720, band.shape[0]])
         elif rng.random() < .4:
             band, tb = decoy_band(rng); y = rng.randint(100, max(101, H - 100)); img, _ = insert_band(img, band, y); H = img.shape[0]
@@ -102,7 +112,7 @@ def gen_set(args):
             if not pres[k][m]: continue
             for _ in range(1 + (rng.random() < .3)):
                 for _try in range(14):
-                    s = sprs[m].scaled(scale_for(sprs[m].w, kinds[m], rng))
+                    s = sprs[m].scaled(embed_scale(sprs[m].w, kinds[m], F1.get(m, 1.0), rng))
                     if rng.random() < .3: s = G.spr_rotated(s, rng.uniform(-12, 12))
                     if s.w >= 700 or s.h >= H - 20 or s.w * s.h > MAX_AREA * 720 * H: continue
                     x = rng.randint(0, 720 - s.w); y = rng.randint(0, H - s.h); a = 1.0 if rng.random() < .6 else float(rng.uniform(.15, .7))
@@ -130,3 +140,4 @@ def main():
 
 
 if __name__ == '__main__': main()
+
